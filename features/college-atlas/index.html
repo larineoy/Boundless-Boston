@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>College atlas demo</title>
+<style>html,body{margin:0;height:100%}#atlas{height:100%}</style></head>
+<body><div id="atlas"></div><script type="module">
+import maplibre from 'https://esm.sh/maplibre-gl@5.6.1';
+import {mountCollegeAtlas} from './mount.js';
+mountCollegeAtlas(document.getElementById('atlas'), {maplibre});
+</script></body></html>

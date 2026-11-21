@@ -10,7 +10,7 @@ import sqlite3
 import statistics
 import time as clock
 import asyncio
-from collections import Counter
+from collections import Counter, deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -21,7 +21,10 @@ import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.tiktok import init_session_db, router as tiktok_router
 
 ROOT = Path(__file__).resolve().parents[2]
 SCORING = yaml.safe_load((ROOT / "scoring" / "weights.yaml").read_text())
@@ -32,10 +35,18 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 with sqlite3.connect(DB_PATH) as _db:
     _db.execute("CREATE TABLE IF NOT EXISTS cache(source TEXT,key TEXT,payload TEXT,fetched REAL,PRIMARY KEY(source,key))")
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+    allow_credentials=True,
+)
+app.include_router(tiktok_router)
 
-SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
+SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "sports", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain", "tiktok"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
 HEALTH: dict[str, dict[str, Any]] = {s: {"source": s, "status": "demo" if DEMO and s in SOURCES[:4] else "disabled", "checked_at": None, "last_success_at": None, "cache_age_s": None, "detail": "Fixture mode" if DEMO and s in SOURCES[:4] else "Not configured"} for s in SOURCES}
+HEALTH["tiktok"].update(status="demo" if DEMO else "disabled", detail="Login Kit personalization only" if DEMO else "TIKTOK_CLIENT_KEY is not configured")
 FAILURES: dict[str, int] = {s: 0 for s in SOURCES}
 OPEN_UNTIL: dict[str, float] = {}
 HALF_OPEN_PROBES: set[str] = set()
@@ -85,6 +96,7 @@ class QueryInput(BaseModel):
     max_walk_min: int = Field(ge=1, le=120)  # the trip-time limit: door to door, on foot or by T
     travel: Literal["walk", "walk_t"] = "walk_t"
     weather_override: Literal["clear", "rain", "cold"] | None = None
+    preference_tags: list[str] = Field(default_factory=list, max_length=12)
 
     @field_validator("lat")
     @classmethod
@@ -103,6 +115,17 @@ class QueryInput(BaseModel):
         now = datetime.now(timezone.utc)
         if not now <= v.astimezone(timezone.utc) <= now + timedelta(hours=24): raise ValueError("time must be within the next 24 hours")
         return v
+    @field_validator("preference_tags")
+    @classmethod
+    def clean_preference_tags(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in v[:12]:
+            tag = re.sub(r"[^a-z0-9_]+", "", str(raw).lower().replace("-", "_").replace(" ", "_"))[:40]
+            if tag and tag not in seen:
+                seen.add(tag)
+                out.append(tag)
+        return out
 
 FIXTURES = [
  {"id":"demo-tatte","name":"Tatte Bakery & Cafe","lat":42.3548,"lng":-71.0601,"address":"1 Boston Wharf Rd, Boston","categories":["cafe","bakery"],"price_level":2,"rating":4.4,"review_count":820,"open_hours":{"status_at_requested_time":"open"},"indoor_outdoor":"indoor","walk_min":8,"source_refs":[{"source":"google_places","external_id":"demo-tatte"}],"attributions":[{"source":"google_places","text":"Demo venue data · Google Places attribution required in live mode","translate_no":True}],"momentum_delta":7},
@@ -132,7 +155,10 @@ def source_use(source: str, status: str | None = None) -> dict[str, Any]:
         "mbta": [{"source": source, "text": "MBTA V3 API", "url": "https://api-v3.mbta.com/"}],
         "nws": [{"source": source, "text": "Weather data by the National Weather Service", "url": "https://www.weather.gov/"}],
         "boston_ckan": [{"source": source, "text": "City of Boston Open Data", "url": "https://data.boston.gov/"}],
+        "sports": [{"source": source, "text": "Game schedules: MLB Stats API (© MLB Advanced Media) and NHL", "url": "https://statsapi.mlb.com/"}],
+        "overpass": [{"source": source, "text": "© OpenStreetMap contributors (ODbL)", "url": "https://www.openstreetmap.org/copyright"}],
         "routing": [{"source": source, "text": "© openrouteservice.org by HeiGIT | Map data © OpenStreetMap contributors", "url": "https://openrouteservice.org/"}],
+        "tiktok": [{"source": source, "text": "TikTok Display API (user-authorized)", "url": "https://developers.tiktok.com/"}],
     }
     return {"source": source, "status": status or h["status"], "observed_at": h["last_success_at"], "cache_age_s": h["cache_age_s"], "attribution": attributions.get(source, [])}
 def envelope(data: dict[str, Any], used: list[str]) -> dict[str, Any]:
@@ -370,7 +396,20 @@ def matches_category(venue: dict[str, Any], wanted: str | None) -> bool:
         return any("park" in c or "garden" in c for c in categories)
     return wanted in categories
 
-def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: dict[str, Any]) -> dict[str,Any]:
+def taste_score(categories: list[str] | None, preference_tags: list[str] | None) -> dict[str, Any]:
+    """Overlap between venue categories and user preference tags (Jaccard). Missing tags drop the component."""
+    prefs = {t for t in (preference_tags or []) if t}
+    cats = {c for c in (categories or []) if c}
+    if not prefs:
+        return {"value": 0.0, "raw": {"preference_tags": [], "categories": sorted(cats), "intersection": []}, "sources": ["tiktok", "saved_places"], "missing_reason": "no_preference_data"}
+    if not cats:
+        return {"value": 0.0, "raw": {"preference_tags": sorted(prefs), "categories": [], "intersection": []}, "sources": ["tiktok", "saved_places"], "missing_reason": None}
+    inter = prefs & cats
+    union = prefs | cats
+    value = len(inter) / len(union) if union else 0.0
+    return {"value": min(1.0, max(0.0, value)), "raw": {"preference_tags": sorted(prefs), "categories": sorted(cats), "intersection": sorted(inter)}, "sources": ["tiktok", "saved_places"], "missing_reason": None}
+
+def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: dict[str, Any], preference_tags: list[str] | None = None) -> dict[str,Any]:
     cfg=SCORING
     delta=v.get("momentum_delta"); momentum=min(1,max(0,delta or 0)/10)
     momentum_meta=v.get("momentum_meta") or {"method":"demo_fixture","label":"demo"}
@@ -381,11 +420,13 @@ def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: 
     w=cfg["weather"]
     adverse=(weather.get("precipitation_chance_pct") or 0)>=w["precipitation_chance_threshold_pct"] or (weather.get("temperature_f") is not None and weather["temperature_f"]<w["cold_threshold_f"])
     mood=w["indoor_adverse"] if (adverse and v["indoor_outdoor"]=="indoor") else (w["outdoor_adverse"] if adverse and v["indoor_outdoor"]=="outdoor" else w["neutral_type"])
+    taste=taste_score(v.get("categories"), preference_tags)
     components={"momentum":{"value":momentum,"raw":{"review_delta_30d":delta,**momentum_meta},"sources":["google_places"],"label":momentum_meta.get("label"),"missing_reason":momentum_meta.get("missing_reason")},
                 "quality":{"value":quality,"raw":{"rating":rating,"review_count":reviews,"prior_reviews":m,"prior_rating":median},"sources":["google_places"],"missing_reason":"no rating" if rating is None else None},
                 "reach":{"value":reach_value,"raw":reach,"sources":["mbta"]},
-                "events":{"value":events,"raw":{"nearby_events":nearby},"sources":["ticketmaster"],"missing_reason":"event data unavailable" if nearby is None else None},
-                "weather":{"value":mood,"raw":weather,"sources":["nws"],"missing_reason":"weather unavailable" if weather.get("temperature_f") is None and weather.get("precipitation_chance_pct") is None else None}}
+                "events":{"value":events,"raw":{"nearby_events":nearby,"games":v.get("nearby_games") or []},"sources":["sports"],"missing_reason":"event data unavailable" if nearby is None else None},
+                "weather":{"value":mood,"raw":weather,"sources":["nws"],"missing_reason":"weather unavailable" if weather.get("temperature_f") is None and weather.get("precipitation_chance_pct") is None else None},
+                "taste":taste}
     # Components without data drop out and the rest are rescaled, so missing sources never cap the score.
     available=sum(cfg["weights"][k] for k,c in components.items() if not c.get("missing_reason"))
     for k,c in components.items():
@@ -513,6 +554,103 @@ def walk_estimate_minutes(lat1: float, lng1: float, lat2: float, lng2: float) ->
     # Conservative street-grid multiplier over straight-line distance; always disclosed as an estimate.
     return max(1, math.ceil(haversine(lat1, lng1, lat2, lng2) * 1.3 / 78.0))
 
+OSM_SNAPSHOT = ROOT / "backend" / "data" / "osm_venues.json"  # refreshed by scripts/refresh_osm_snapshot.py
+OSM_DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+
+def parse_osm_hours(spec: str | None) -> dict[int, list[tuple[int, int]]] | None:
+    """Common OSM opening_hours forms → {weekday: [(start_min, end_min)]}; end may pass 1440 (after midnight).
+    Supports '24/7', 'Mo-Fr 11:00-22:00; Sa,Su 10:00-02:00', 'Su off'. Anything else (PH, months, comments) → None = unknown."""
+    if not spec:
+        return None
+    spec = re.sub(r"\s*,\s*", ",", spec.strip())  # "11:00-14:00, 17:00-22:00" is common in OSM
+    if spec == "24/7":
+        return {d: [(0, 1440)] for d in range(7)}
+    week: dict[int, list[tuple[int, int]]] = {d: [] for d in range(7)}
+    for rule in filter(None, (r.strip() for r in spec.split(";"))):
+        m = re.fullmatch(r"(?:([A-Z][a-z](?:-[A-Z][a-z])?(?:,[A-Z][a-z](?:-[A-Z][a-z])?)*)\s+)?(off|closed|\d\d:\d\d-\d\d:\d\d(?:,\d\d:\d\d-\d\d:\d\d)*)", rule)
+        if not m:
+            return None
+        days: set[int] = set()
+        for part in (m.group(1) or "Mo-Su").split(","):
+            ends = part.split("-")
+            if any(e not in OSM_DAYS for e in ends):
+                return None  # PH, SH, etc.
+            a, b = OSM_DAYS.index(ends[0]), OSM_DAYS.index(ends[-1])
+            days.update(range(a, b + 1) if a <= b else [*range(a, 7), *range(0, b + 1)])  # Su-Th wraps
+        spans = []
+        if m.group(2) not in ("off", "closed"):
+            for span in m.group(2).split(","):
+                (h1, m1), (h2, m2) = (map(int, t.split(":")) for t in span.split("-"))
+                if h1 > 24 or h2 > 48 or m1 > 59 or m2 > 59:
+                    return None
+                start, end = h1 * 60 + m1, h2 * 60 + m2
+                spans.append((start, end + 1440 if end <= start else end))  # 18:00-02:00 runs past midnight
+        for d in days:
+            week[d] = spans  # a later rule replaces earlier ones for its days
+    return week
+
+def osm_open_at(spec: str | None, when: datetime) -> str:
+    week = parse_osm_hours(spec)
+    if week is None:
+        return "unknown"
+    local = when.astimezone(ZoneInfo("America/New_York"))
+    minute, day = local.hour * 60 + local.minute, local.weekday()
+    today = any(a <= minute < b for a, b in week[day])
+    from_yesterday = any(b > 1440 and minute < b - 1440 for _, b in week[(day - 1) % 7])
+    return "open" if today or from_yesterday else "closed"
+
+_OSM_CACHE: dict[str, Any] = {}
+
+def load_osm_snapshot() -> dict[str, Any] | None:
+    """The parsed snapshot, re-read only when the file changes (it is a few MB; parsing per request would block the loop)."""
+    try:
+        mtime = OSM_SNAPSHOT.stat().st_mtime
+        if _OSM_CACHE.get("mtime") != mtime:
+            snap = json.loads(OSM_SNAPSHOT.read_text())
+            snap["generated"] = datetime.fromisoformat(snap["generated_at"])
+            if not isinstance(snap["venues"], list):
+                raise ValueError("venues must be a list")
+            _OSM_CACHE.update(mtime=mtime, snap=snap)
+        return _OSM_CACHE["snap"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+def osm_candidates(q: QueryInput, category: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    """Backup venues from the bundled OSM snapshot (no key, no live call): the nearest named places within 5 km
+    that are open at the requested time and match the category; only those count toward the limit."""
+    snap = load_osm_snapshot()
+    if snap is None:
+        HEALTH["overpass"].update(status="disabled", detail="No usable OSM snapshot; run scripts/refresh_osm_snapshot.py")
+        return []
+    generated = snap["generated"]
+    HEALTH["overpass"].update(status="cached", last_success_at=generated.isoformat(), checked_at=now_iso(),
+                              cache_age_s=round((datetime.now(timezone.utc) - generated).total_seconds()),
+                              detail="Bundled OSM snapshot (backup while Google Places is unavailable)")
+    near = sorted(((haversine(q.lat, q.lng, v["lat"], v["lng"]), v) for v in snap["venues"]), key=lambda x: x[0])
+    out = []
+    for distance, v in near:
+        if distance > 5000 or len(out) >= limit:
+            break
+        if osm_open_at(v.get("opening_hours"), q.time) != "open":
+            continue
+        raw = v.get("amenity") or v.get("leisure") or "venue"
+        kind = {"nightclub": "night_club"}.get(raw, raw)  # match Google type names
+        cuisine = [c.strip() for c in v.get("cuisine", "").split(";") if c.strip()]
+        categories = [kind, *(["bar"] if kind == "pub" else []), *cuisine]  # a "bar" search should include pubs
+        if not matches_category({"categories": categories}, category):
+            continue
+        address = " ".join(x for x in (v.get("addr:housenumber"), v.get("addr:street")) if x) or None
+        out.append({"id": f"osm-{v['osm'].replace('/', '-')}", "name": v["name"], "lat": v["lat"], "lng": v["lng"], "address": address,
+                    "categories": categories, "price_level": None, "rating": None, "review_count": None,
+                    "open_hours": {"status_at_requested_time": "open", "periods": None,
+                                   "timezone": "America/New_York", "source": "overpass"},
+                    "indoor_outdoor": "outdoor" if kind == "park" else "indoor",
+                    "walk_min": walk_estimate_minutes(q.lat, q.lng, v["lat"], v["lng"]), "walk_method": "straight_line_estimate",
+                    "source_refs": [{"source": "overpass", "external_id": v["osm"], "url": f"https://www.openstreetmap.org/{v['osm']}"}],
+                    "attributions": [{"source": "overpass", "text": "© OpenStreetMap contributors", "url": "https://www.openstreetmap.org/copyright"}],
+                    "momentum_delta": None, "momentum_meta": {"method": "unavailable", "label": None, "missing_reason": "no_velocity_data"}})
+    return out
+
 async def live_candidates(q: QueryInput) -> tuple[list[dict[str,Any]],bool]:
     key=os.getenv("GOOGLE_MAPS_API_KEY")
     if DEMO: return [dict(v) for v in FIXTURES], False
@@ -563,25 +701,41 @@ def _event_time(schedule: dict[str, Any], event: str = "departure") -> datetime 
     except ValueError:
         return None
 
-async def mbta_nearby_stops(lat: float, lng: float, radius_m: int = 1200) -> list[dict[str, Any]]:
-    params = {"filter[latitude]": lat, "filter[longitude]": lng, "filter[radius]": 0.015, "filter[location_type]": "0,1", "sort": "distance", "page[limit]": 100}  # radius is in degrees (0.015 ≈ 1.2-1.7 km here); 0,1 = stops and stations, not entrances/stairs
-    headers={"x-api-key":os.environ["MBTA_API_KEY"]} if os.getenv("MBTA_API_KEY") else None
-    data = await request_json("mbta", f"{MBTA_BASE}/stops", params, headers=headers)
+_MBTA_STOPS: dict[str, Any] = {}
+_MBTA_STOPS_LOCK = asyncio.Lock()  # one 2.7 MB fetch at a time; waiters reuse its result
+
+async def mbta_all_stops() -> list[dict[str, Any]] | None:
+    """Every MBTA stop and station (open data, ~8k), fetched at most daily. Nearest-stop search then runs locally, so no
+    coordinates (Google Places or the user's) are sent to the MBTA; only stop IDs are, for routes and schedules."""
+    if _MBTA_STOPS and clock.time() < _MBTA_STOPS["fresh_until"]:
+        return _MBTA_STOPS.get("stops")
+    async with _MBTA_STOPS_LOCK:
+        if _MBTA_STOPS and clock.time() < _MBTA_STOPS["fresh_until"]:
+            return _MBTA_STOPS.get("stops")
+        return await _refresh_mbta_stops()
+
+async def _refresh_mbta_stops() -> list[dict[str, Any]] | None:
+    headers = {"x-api-key": os.environ["MBTA_API_KEY"]} if os.getenv("MBTA_API_KEY") else None
+    data = await request_json("mbta", f"{MBTA_BASE}/stops", {"filter[location_type]": "0,1", "fields[stop]": "name,latitude,longitude,location_type"},
+                              headers=headers, timeout=15.0)
     if not data:
+        # Back off instead of refetching on every lookup (that would stall requests and trip the shared MBTA breaker);
+        # keep serving the previous list if there is one.
+        _MBTA_STOPS["fresh_until"] = clock.time() + (300 if _MBTA_STOPS.get("stops") else 60)
+        return _MBTA_STOPS.get("stops")
+    stops = [{"id": st["id"], "name": a.get("name", "MBTA stop"), "lat": a["latitude"], "lng": a["longitude"], "station": a.get("location_type") == 1}
+             for st in data.get("data", []) if (a := st.get("attributes", {})).get("latitude") is not None and a.get("longitude") is not None]
+    _MBTA_STOPS.update(fresh_until=clock.time() + 86400, stops=stops)
+    return stops
+
+async def mbta_nearby_stops(lat: float, lng: float, radius_m: int = 1200) -> list[dict[str, Any]]:
+    stops = await mbta_all_stops()
+    if not stops:
         return []
-    stops = []
-    for stop in data.get("data", []):
-        attrs = stop.get("attributes", {})
-        slat, slng = attrs.get("latitude"), attrs.get("longitude")
-        if slat is None or slng is None:
-            continue
-        distance = haversine(lat, lng, slat, slng)
-        if distance <= radius_m:
-            stops.append({"id": stop["id"], "name": attrs.get("name", "MBTA stop"), "lat": slat, "lng": slng, "distance_m": distance,
-                          "station": attrs.get("location_type") == 1})
-    stops.sort(key=lambda s: s["distance_m"])
+    near = sorted(({**s, "distance_m": d} for s in stops if (d := haversine(lat, lng, s["lat"], s["lng"])) <= radius_m),
+                  key=lambda s: s["distance_m"])
     # Nearest stations cover the subway lines (a nearby bus stop or platform would otherwise crowd them out); plus the closest bus stops.
-    return [s for s in stops if s["station"]][:3] + [s for s in stops if not s["station"]][:2]
+    return [s for s in near if s["station"]][:3] + [s for s in near if not s["station"]][:2]
 
 async def mbta_routes_at(stop_id: str) -> set[str]:
     headers={"x-api-key":os.environ["MBTA_API_KEY"]} if os.getenv("MBTA_API_KEY") else None
@@ -630,8 +784,9 @@ async def mbta_predictions(stop_id: str, route_id: str, direction: int) -> set[s
             trips.add(trip_id)
     return trips
 
-async def mbta_route_alerts(stop_id: str, route_id: str) -> list[dict[str, Any]]:
-    params={"filter[stop]":stop_id,"filter[route]":route_id,"filter[activity]":"BOARD","page[limit]":50}
+async def mbta_route_alerts(stop_id: str, route_id: str, at: datetime) -> list[dict[str, Any]]:
+    # Only alerts active at the trip time: an upcoming weekend suspension must not block tonight's trains.
+    params={"filter[stop]":stop_id,"filter[route]":route_id,"filter[activity]":"BOARD","filter[datetime]":at.replace(microsecond=0).isoformat(),"page[limit]":50}
     headers={"x-api-key":os.environ["MBTA_API_KEY"]} if os.getenv("MBTA_API_KEY") else None
     data=await request_json("mbta",f"{MBTA_BASE}/alerts",params,headers=headers)
     return (data or {}).get("data",[])
@@ -651,6 +806,78 @@ def round_trip_plan(route_id: str, origin: str, destination: str, out: tuple[dat
             # last_of_night: the search window reached the end of the MBTA service day, so this really is the last train back.
             "last_return": {**leg(destination, origin, last), "last_of_night": last_of_night},
             "label": label or ("Live departure and scheduled return" if live else "Scheduled round trip; prediction unavailable")}
+
+# Subway transfer stations (parent stops). Routes are looked up live, so branch changes don't need code edits.
+TRANSFER_HUBS = {"place-pktrm": "Park Street", "place-dwnxg": "Downtown Crossing", "place-state": "State",
+                 "place-gover": "Government Center", "place-haecl": "Haymarket", "place-north": "North Station"}
+TRANSFER_MIN = timedelta(minutes=3)  # time to change platforms
+BLOCKING_EFFECTS = {"NO_SERVICE", "SUSPENSION"}
+
+async def route_blocked(route_id: str, stop_ids: tuple[str, ...], at: datetime) -> bool:
+    alerts = await asyncio.gather(*(mbta_route_alerts(sid, route_id, at) for sid in stop_ids))
+    return any(a.get("attributes", {}).get("effect") in BLOCKING_EFFECTS for group in alerts for a in group)
+
+async def find_leg(a: str, b: str, route_id: str, earliest: datetime, latest: datetime) -> tuple[datetime, datetime, int, str] | None:
+    """Earliest-arriving trip on one route from stop a (leaving at/after earliest) to stop b (arriving by latest):
+    (depart, arrive, direction, trip_id). Same trip at both stops, in time order."""
+    for direction in (0, 1):
+        at_a, at_b = await asyncio.gather(mbta_schedules(a, route_id, direction, earliest, latest),
+                                          mbta_schedules(b, route_id, direction, earliest, latest))
+        deps = {tid: t for x in at_a if (tid := _resource_trip_id(x)) and (t := _event_time(x, "departure"))}
+        arrs = {tid: t for x in at_b if (tid := _resource_trip_id(x)) and (t := _event_time(x, "arrival"))}
+        trips = [(arrs[tid], deps[tid], tid) for tid in deps if tid in arrs and earliest <= deps[tid] < arrs[tid] <= latest]
+        if trips:
+            arrive, depart, tid = min(trips)
+            return depart, arrive, direction, tid
+    return None
+
+async def transfer_round_trip(q: QueryInput, venue: dict[str, Any], origin_stops: list[dict[str, Any]],
+                              venue_stops: list[dict[str, Any]], routes_by_stop: dict[str, set[str]],
+                              depart: datetime, return_after: datetime, return_before: datetime, last_of_night: bool) -> dict[str, Any] | None:
+    """One change between two subway lines at a transfer station, there and back. Only the single best candidate is tried
+    (about 16 MBTA calls), and only when no direct line works."""
+    hub_ids = list(TRANSFER_HUBS)
+    hub_routes = dict(zip(hub_ids, await asyncio.gather(*(mbta_routes_at(h) for h in hub_ids))))
+    best = None
+    for origin in origin_stops:
+        for destination in venue_stops:
+            for a in routes_by_stop.get(origin["id"], set()):
+                for b in routes_by_stop.get(destination["id"], set()):
+                    if a == b or mbta_line(a)["mode"] != "subway" or mbta_line(b)["mode"] != "subway":
+                        continue
+                    for hub in hub_ids:
+                        if a in hub_routes[hub] and b in hub_routes[hub] and hub not in (origin["id"], destination["id"]):
+                            rank = origin["distance_m"] + destination["distance_m"]
+                            if best is None or rank < best[0]:
+                                best = (rank, origin, destination, a, b, hub)
+    if best is None:
+        return None
+    _, origin, destination, a, b, hub = best
+    walk_to = walk_estimate_minutes(q.lat, q.lng, origin["lat"], origin["lng"])
+    walk_from = walk_estimate_minutes(destination["lat"], destination["lng"], venue["lat"], venue["lng"])
+    catchable = depart + timedelta(minutes=walk_to)
+    if any(await asyncio.gather(route_blocked(a, (origin["id"], hub), catchable), route_blocked(b, (hub, destination["id"]), catchable),
+                                route_blocked(b, (destination["id"], hub), return_after), route_blocked(a, (hub, origin["id"]), return_after))):
+        return None  # either line blocked going out or on the way home
+    leg1 = await find_leg(origin["id"], hub, a, catchable, depart + timedelta(minutes=90))
+    leg2 = leg1 and await find_leg(hub, destination["id"], b, leg1[1] + TRANSFER_MIN, leg1[1] + timedelta(minutes=60))
+    back1 = leg2 and await find_leg(destination["id"], hub, b, return_after, return_before)
+    back2 = back1 and await find_leg(hub, origin["id"], a, back1[1] + TRANSFER_MIN, return_before)
+    if not back2:
+        return None
+    live = bool(await mbta_predictions(origin["id"], a, leg1[2]) & {leg1[3]})
+    line_a, line_b, hub_name = mbta_line(a), mbta_line(b), TRANSFER_HUBS[hub]
+    total_min = math.ceil((leg2[1] - depart).total_seconds() / 60) + walk_from
+    def leg(frm: str, to: str, start: datetime, end: datetime, first: dict, second: dict) -> dict[str, Any]:
+        return {"from_stop": frm, "to_stop": to, "route": first["id"], "line": first, "depart_at": start.isoformat(), "arrive_at": end.isoformat(),
+                "transfer": {"at": hub_name, "line": second}}
+    # shortcut: no "latest train back" for transfers (only the first return chain is searched); add a later-chain search if wanted.
+    back = leg(destination["name"], origin["name"], back1[0], back2[1], line_b, line_a)
+    return {"reachable": True, "reach_value": 1.0 if live else 0.5, "method": "predicted_round_trip" if live else "scheduled_round_trip",
+            "line": line_a, "outbound": leg(origin["name"], destination["name"], leg1[0], leg2[1], line_a, line_b),
+            "return": {**back, "before_last_service": True}, "last_return": None,
+            "total_min": total_min, "walk_to_stop_min": walk_to, "walk_from_stop_min": walk_from,
+            "label": f"{line_a['name']} → {line_b['name']}, change at {hub_name}" + (" (live departure)" if live else " (scheduled)")}
 
 NO_TRANSIT = {"reachable": False, "reach_value": 0.5, "method": "walking_fallback", "outbound": None, "return": None}
 
@@ -673,6 +900,8 @@ def demo_round_trip(q: QueryInput, venue: dict[str, Any]) -> dict[str, Any]:
 async def assess_mbta_round_trip(q: QueryInput, venue: dict[str, Any], origin_stops: list[dict[str, Any]]) -> dict[str, Any]:
     if DEMO:
         return demo_round_trip(q, venue)
+    if not origin_stops:
+        return {**NO_TRANSIT, "label": "No MBTA stop near you; walking estimate used"}
     venue_stops = await mbta_nearby_stops(venue["lat"], venue["lng"])
     if not origin_stops or not venue_stops:
         return {**NO_TRANSIT, "label": "No nearby MBTA stop pair; walking fallback"}
@@ -698,10 +927,9 @@ async def assess_mbta_round_trip(q: QueryInput, venue: dict[str, Any], origin_st
         walk_to = walk_estimate_minutes(q.lat, q.lng, origin["lat"], origin["lng"])
         walk_from = walk_estimate_minutes(destination["lat"], destination["lng"], venue["lat"], venue["lng"])
         catchable = depart + timedelta(minutes=walk_to)  # you have to walk to the stop before the train leaves
-        alerts_a,alerts_b=await asyncio.gather(mbta_route_alerts(origin["id"],route_id),mbta_route_alerts(destination["id"],route_id))
-        blocked_effects={"NO_SERVICE","SUSPENSION"}
-        if any(a.get("attributes",{}).get("effect") in blocked_effects for a in alerts_a+alerts_b):
-            continue
+        if any(await asyncio.gather(route_blocked(route_id, (origin["id"], destination["id"]), catchable),
+                                    route_blocked(route_id, (destination["id"], origin["id"]), return_after))):
+            continue  # blocked going out, or on the way home (e.g. an evening suspension)
         # A valid leg must be the same trip at both ends, in the correct time order.
         for direction in (0, 1):
             out_a, out_b = await asyncio.gather(
@@ -733,7 +961,9 @@ async def assess_mbta_round_trip(q: QueryInput, venue: dict[str, Any], origin_st
                                        (origin_trips[out_id], destination_trips[out_id]), (venue_trips[ret_id], home_trips[ret_id]),
                                        (venue_trips[last_id], home_trips[last_id]), last_of_night, live_confirmed,
                                        depart, (walk_to, walk_from))
-    return {**NO_TRANSIT, "label": "No matching scheduled round trip; walking fallback"}
+    # No single line works: try one change between subway lines.
+    plan = await transfer_round_trip(q, venue, origin_stops, venue_stops, routes_by_stop, depart, return_after, return_before, last_of_night)
+    return plan or {**NO_TRANSIT, "label": "No matching scheduled round trip; walking fallback"}
 
 def _field_name(fields: list[dict[str, Any]], aliases: tuple[str, ...]) -> str | None:
     names = {str(f.get("id", "")).casefold(): str(f.get("id", "")) for f in fields}
@@ -923,6 +1153,64 @@ def nws_period_at(data: dict[str, Any] | None, target: datetime) -> dict[str, An
             return {"temperature_f": temp, "precipitation_chance_pct": chance, "forecast_for": period["startTime"], "source": "nws"}
     return None
 
+# Big home games are the events that fill nearby bars; both schedules are public and need no key.
+SPORTS_VENUES = {"Fenway Park": (42.3467, -71.0972), "TD Garden": (42.3662, -71.0621)}
+_SPORTS: dict[str, Any] = {}
+
+def _mlb_home_games(data: Any) -> list[dict[str, Any]] | None:
+    try:
+        games = []
+        for day in data.get("dates", []):
+            for g in day.get("games", []):
+                status = g.get("status") or {}
+                if status.get("codedGameState") in ("D", "C") or status.get("detailedState") in ("Postponed", "Cancelled"):
+                    continue  # rainouts stay in the schedule at their original time
+                venue = (g.get("venue") or {}).get("name")
+                if venue in SPORTS_VENUES and g.get("gameDate"):
+                    away = (((g.get("teams") or {}).get("away") or {}).get("team") or {}).get("name", "visitors")
+                    games.append({"start": datetime.fromisoformat(g["gameDate"].replace("Z", "+00:00")), "venue": venue, "label": f"Red Sox vs {away}"})
+        return games
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None  # unexpected shape counts as the feed being down, never a failed search
+
+def _nhl_home_games(data: Any) -> list[dict[str, Any]] | None:
+    try:
+        games = []
+        for g in data.get("games", []):
+            venue = (g.get("venue") or {}).get("default")
+            if venue in SPORTS_VENUES and g.get("startTimeUTC") and g.get("gameScheduleState", "OK") == "OK":
+                away = ((g.get("awayTeam") or {}).get("commonName") or {}).get("default", "visitors")
+                games.append({"start": datetime.fromisoformat(g["startTimeUTC"].replace("Z", "+00:00")), "venue": venue, "label": f"Bruins vs {away}"})
+        return games
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None
+
+async def boston_home_games() -> list[dict[str, Any]] | None:
+    """Red Sox (MLB) and Bruins (NHL) home games, refreshed every 6 h. A failed feed keeps its last good list and is
+    retried in 5 min; None only when neither team has ever loaded."""
+    if _SPORTS and clock.time() < _SPORTS["fresh_until"]:
+        return _SPORTS.get("games")  # absent after a failed first fetch (backoff with nothing to serve)
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    season = f"{today.year}{today.year + 1}" if today.month >= 7 else f"{today.year - 1}{today.year}"
+    mlb, nhl = await asyncio.gather(
+        request_json("sports", "https://statsapi.mlb.com/api/v1/schedule",
+                     {"sportId": 1, "teamId": 111, "startDate": (today - timedelta(days=1)).isoformat(), "endDate": (today + timedelta(days=2)).isoformat()}),
+        request_json("sports", f"https://api-web.nhle.com/v1/club-schedule-season/BOS/{season}"))
+    by_team = _SPORTS.setdefault("by_team", {})
+    fresh = {"mlb": None if mlb is None else _mlb_home_games(mlb), "nhl": None if nhl is None else _nhl_home_games(nhl)}
+    for team, games in fresh.items():
+        if games is not None:
+            by_team[team] = games
+    _SPORTS["fresh_until"] = clock.time() + (6 * 3600 if all(g is not None for g in fresh.values()) else 300)
+    _SPORTS["games"] = [g for games in by_team.values() for g in games] if by_team else None
+    return _SPORTS["games"]
+
+def games_around(games: list[dict[str, Any]] | None, when: datetime) -> list[dict[str, Any]] | None:
+    """Games that started up to 3 h before, or start within 3 h after, the requested time (crowds arriving or leaving)."""
+    if games is None:
+        return None
+    return [g for g in games if timedelta(hours=-3) <= g["start"] - when <= timedelta(hours=3)]
+
 async def forecast_for_query(q: QueryInput) -> dict[str, Any]:
     if DEMO:
         result = {"temperature_f": 55.0, "precipitation_chance_pct": 0, "source": "demo_fixture"}
@@ -948,6 +1236,9 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     parsed=await parse_query_text(q.free_text)
     budget=parsed.get("budget",q.budget); walk=parsed.get("max_walk_min",q.max_walk_min)
     places,_=await live_candidates(q)
+    backup=not DEMO and not places  # Google unavailable (no key, quota, outage): fall back to the OSM snapshot, never mixed
+    if backup: places=osm_candidates(q,parsed.get("category"))
+    else: HEALTH["overpass"].update(status="disabled", detail="Standby: used only when Google Places is unavailable")
     # Google Places coordinates must not go to a non-Google routing service (Maps ToS 3.2.3(a),(c)), so only
     # non-Google candidates are routed; Google venues keep the labeled straight-line estimate.
     to_route=[v for v in places if routable(v)]
@@ -955,13 +1246,20 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     for venue,minutes in zip(to_route,routed or []):
         if minutes is not None:
             venue["walk_min"],venue["walk_method"]=minutes,"routed"
-    weather=await forecast_for_query(q)
+    weather,games=await asyncio.gather(forecast_for_query(q),boston_home_games()) if not DEMO else (await forecast_for_query(q),None)
+    if DEMO:  # one labeled demo game: TD Garden, 7 pm on the search's Boston date
+        day=q.time.astimezone(ZoneInfo("America/New_York")).date()
+        games=[{"start":datetime.combine(day,datetime.min.time(),ZoneInfo("America/New_York")).replace(hour=19),"venue":"TD Garden","label":"Bruins vs Demo Rivals (demo)"}]
+        HEALTH["sports"].update(status="demo",detail="Demo game fixture at TD Garden, 7 pm")
+    games=games_around(games,q.time)
     max_price={"$":1,"$$":2,"$$$":3}[budget]
     pre_candidates=[]
     for venue in places:
         if venue.get("lat") is None or venue.get("lng") is None: continue
         if venue.get("open_hours",{}).get("status_at_requested_time")!="open": continue
-        if venue.get("price_level") is None or venue["price_level"]>max_price: continue
+        # OSM has no price levels; backup venues stay eligible and the card says "price unknown".
+        if venue.get("price_level") is None and not backup: continue
+        if venue.get("price_level") is not None and venue["price_level"]>max_price: continue
         if not matches_category(venue,parsed.get("category")): continue
         pre_candidates.append(venue)
     # Walk-only searches skip the MBTA; otherwise check the T for places that are a long walk or beyond the limit.
@@ -982,29 +1280,67 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
         if reach: eligible.append((v,reach))
     ratings=sorted(v["rating"] for v,_ in eligible if v.get("rating") is not None)
     median=statistics.median(ratings) if ratings else 3.0
+    prefs=q.preference_tags or []
     candidates=[]
     for v,reach in eligible:
         v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") not in (None,"routed") else None}
-        scored=score_venue(v,median,weather,reach)
+        near=None if games is None else [g for g in games if haversine(v["lat"],v["lng"],*SPORTS_VENUES[g["venue"]])<=SCORING["events"]["radius_m"]]
+        v["nearby_events"]=None if near is None else len(near)
+        v["nearby_games"]=[f'{g["label"]} at {g["venue"]}, {g["start"].astimezone(ZoneInfo("America/New_York")).strftime("%-I:%M %p")}' for g in near or []]
+        scored=score_venue(v,median,weather,reach,prefs)
         candidates.append({"venue":v,"score":scored,"reachability":reach,
                            "explanation":(f"Open at your requested time, within budget, and about {v['walk_min']} minutes on foot; walk time is an estimate where labeled." if reach["method"]=="walking_fallback"
                                          else f"Open at your requested time and within budget; about {reach.get('total_min')} minutes door to door by T: {transit_summary(reach) or reach['outbound']['route']}."),
                            "reach_explanation":reach.get("label")})
-    candidates.sort(key=lambda x:x["score"]["value"],reverse=True)
+    candidates.sort(key=lambda x:(-x["score"]["value"],x["venue"]["walk_min"]))  # ties (common in the OSM backup) go to the shorter walk
     candidates=candidates[:8]
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
-    used=["google_places","mbta","nws"]+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])
-    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
+    used=["google_places","mbta","nws","sports"]+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])+(["tiktok"] if prefs else [])
+    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override,"preference_tags":prefs},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
 
 @app.on_event("startup")
 async def discover_boston_resources() -> None:
+    init_session_db()
     # Resolve CKAN resource IDs from package metadata; never pin deployment-specific IDs.
     if not DEMO:
         await resolve_ckan_resources(force=True)
 
 @app.get("/api/health")
 def health() -> dict[str,str]: return {"status":"ok"}
+# Per-visitor and site-wide sliding windows (requests per 60 s) on the endpoints that spend Google/Gemini/ORS/MBTA quota.
+RATE_LIMITS = {"/api/query": (30, 120), "/api/recommendations": (30, 120), "/api/explain": (30, 120)}
+_HITS: dict[tuple[str, str], deque[float]] = {}
+
+def client_key(request: Request) -> str:
+    # shortcut: trusts the left-most X-Forwarded-For (set by Render's proxies), which a client can spoof to dodge the
+    # per-visitor limit; the site-wide cap still bounds total spend. Upgrade if Render exposes a verified client-IP header.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    limits = RATE_LIMITS.get(request.url.path)
+    if limits and request.method != "OPTIONS":  # CORS preflights don't spend quota
+        now, path = clock.time(), request.url.path
+        windows = [((client_key(request), path), limits[0]), (("*", path), limits[1])]
+        for key, cap in windows:
+            hits = _HITS.get(key) or deque()  # no entry until accepted, so rejected floods can't grow memory
+            while hits and hits[0] <= now - 60:
+                hits.popleft()
+            if len(hits) >= cap:
+                retry = max(1, int(hits[0] + 60 - now) + 1)
+                who = "this visitor" if key[0] != "*" else "the site"
+                return JSONResponse(status_code=429, headers={"Retry-After": str(retry)},
+                                    content={"error": {"code": "rate_limited", "message": f"Too many requests from {who}; try again in {retry} s."},
+                                             "sources_used": [], "generated_at": now_iso()})
+        for key, _ in windows:
+            _HITS.setdefault(key, deque()).append(now)
+        if len(_HITS) > 5000:  # forget idle visitors so memory stays bounded
+            for key in [k for k, v in _HITS.items() if not v or v[-1] <= now - 60]:
+                del _HITS[key]
+    return await call_next(request)
+
 @app.post("/api/query")
 async def query(q: QueryInput) -> dict[str,Any]: return await make_query(q)
 @app.post("/api/explain")
@@ -1012,8 +1348,8 @@ async def explain(f: ExplainInput) -> dict[str,Any]:
     why=await gemini_explanation(f.model_dump())
     return envelope({"id":f.id,"explanation":why,"source":"gemini" if why else "unavailable"},["gemini_explain"])
 @app.get("/api/recommendations")
-async def recommendations(time: datetime, budget: Literal["$","$$","$$$"], lat: float, lng: float, max_walk_min: int=Query(ge=1,le=120), free_text: str|None=None, weather_override: Literal["clear","rain","cold"]|None=None) -> dict[str,Any]:
-    return await make_query(QueryInput(time=time,budget=budget,lat=lat,lng=lng,max_walk_min=max_walk_min,free_text=free_text,weather_override=weather_override))
+async def recommendations(time: datetime, budget: Literal["$","$$","$$$"], lat: float, lng: float, max_walk_min: int=Query(ge=1,le=120), travel: Literal["walk","walk_t"]="walk_t", free_text: str|None=None, weather_override: Literal["clear","rain","cold"]|None=None, preference_tags: list[str]|None=Query(default=None)) -> dict[str,Any]:
+    return await make_query(QueryInput(time=time,budget=budget,lat=lat,lng=lng,max_walk_min=max_walk_min,travel=travel,free_text=free_text,weather_override=weather_override,preference_tags=preference_tags or []))
 @app.get("/api/neighborhood")
 async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=180),radius_m:int=Query(ge=50,le=5000)) -> dict[str,Any]:
     if not DEMO:

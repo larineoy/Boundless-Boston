@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowDownRight, ArrowRight, ArrowUpRight, ChevronDown, ChevronRight, CloudRain, Crosshair, Footprints, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
 import type React from 'react';
@@ -9,14 +9,19 @@ import '@fontsource/krona-one/latin-400.css';
 import '@fontsource/noto-sans/latin-400.css';
 import '@fontsource/noto-sans/latin-600.css';
 import '@fontsource/noto-sans/latin-700.css';
+import { Plasma, PlasmaProvider } from '@cruxgarden/plasma-ui';
+import { ArrowDownRight, ArrowUpRight, Bookmark, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
 import './style.css';
 
-type Venue={id:string;name:string;lat:number;lng:number;address:string|null;categories:string[];price_level:number|null;rating:number|null;review_count:number|null;walk_min:number;walk_estimate?:{label:string|null};indoor_outdoor:string;attributions:{source:string;text:string;url?:string;required_logo?:string;translate_no?:boolean}[]};
+type Venue={id:string;name:string;lat:number;lng:number;address:string|null;categories:string[];price_level:number|null;rating:number|null;review_count:number|null;walk_min:number;walk_estimate?:{label:string|null};indoor_outdoor:string;attributions:{source:string;text:string;url?:string;required_logo?:string;translate_no?:boolean}[];source_refs?:{source:string;external_id:string}[]};
 type Line={id:string;name:string;color:string;mode:string};
-type Leg={route?:string;line?:Line;from_stop?:string;to_stop?:string;depart_at?:string;arrive_at?:string};
+type Leg={route?:string;line?:Line;from_stop?:string;to_stop?:string;depart_at?:string;arrive_at?:string;transfer?:{at:string;line:Line}};
 type Rec={venue:Venue;reachability:{method:string;label?:string;outbound?:Leg|null;return?:Leg|null;last_return?:(Leg&{last_of_night?:boolean})|null;total_min?:number|null;walk_to_stop_min?:number;walk_from_stop_min?:number};score:{value:number;components:Record<string,{value:number;weight:number;base_weight?:number;label?:string;missing_reason?:string|null;raw:Record<string,unknown>;sources:string[]}>};explanation:string;reach_explanation?:string;explain_facts?:Record<string,unknown>};
-type Result={recommendations:Rec[];sources_used:{source:string;status:string}[];generated_at:string;empty_message:string|null;query:{parsed_filters?:Record<string,unknown>};weather:{temperature_f:number|null;precipitation_chance_pct:number|null;forecast_for?:string;override?:string}};
+type Result={recommendations:Rec[];sources_used:{source:string;status:string}[];generated_at:string;empty_message:string|null;query:{parsed_filters?:Record<string,unknown>;preference_tags?:string[]};weather:{temperature_f:number|null;precipitation_chance_pct:number|null;forecast_for?:string;override?:string}};
 type Neighborhood={center:{lat:number;lng:number};radius_m:number;311:{top_categories:{category:string;count:number}[];period_start:string;period_end:string}|null;business_licenses:{name:string;issued_at:string;address?:string;distance_m?:number}[]|null;business_licenses_source?:string|null;city_contacts:{name:string;service:string;phone:string;url:string}[]|null};
+type SavedPlace={place_id:string;name:string;categories:string[];address:string|null;price_level:number|null;saved_at:string};
+
+const SAVED_KEY='boundless.savedPlaces.v1';
 const center:[number,number]=[42.355,-71.062];
 const clock=(iso?:string)=>iso?new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}):'';
 const rideMin=(leg:Leg)=>leg.depart_at&&leg.arrive_at?Math.max(1,Math.round((Date.parse(leg.arrive_at)-Date.parse(leg.depart_at))/60000)):null;
@@ -66,16 +71,108 @@ function TransitRow({r}:{r:Rec}){
  const ride=rideMin(out);
  return <div className="transit-row"><span className="line-pill" style={{background:out.line.color,color:out.line.mode==='bus'?'#141414':'#fff'}}>{out.line.name}</span><span className="transit-stops">{r.reachability.walk_to_stop_min!=null?`${r.reachability.walk_to_stop_min} min walk · `:''}{out.from_stop} → {out.to_stop}{ride?` · ${ride} min ride`:''}{r.reachability.walk_from_stop_min!=null?` · ${r.reachability.walk_from_stop_min} min walk`:''}</span>{last?.depart_at&&<span className="last-train"><Moon size={13} strokeWidth={2.5}/> {last.last_of_night?'Last train back':'Latest train back'} {clock(last.depart_at)}</span>}</div>;
 }
-const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data'};
-// datetime-local wants local wall time (toISOString is UTC); +2h then floor keeps the default 1-2 h ahead, never seconds.
+const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data',sports:'Red Sox & Bruins schedules',overpass:'OpenStreetMap (backup)',tiktok:'TikTok taste'};
 const futureTime=()=>{const d=new Date(Date.now()+2*60*60*1000);d.setMinutes(0,0,0);const p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`};
+
+function loadSaved():SavedPlace[]{
+  try{const raw=localStorage.getItem(SAVED_KEY);if(!raw)return[];const parsed=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter((x:SavedPlace)=>x&&typeof x.place_id==='string'):[]}catch{return[]}
+}
+function persistSaved(items:SavedPlace[]){localStorage.setItem(SAVED_KEY,JSON.stringify(items))}
+function placeIdFor(v:Venue){return v.source_refs?.find(r=>r.source==='google_places')?.external_id||v.id}
+function tagsFromSaved(items:SavedPlace[]):string[]{
+  const counts=new Map<string,number>();
+  for(const item of items)for(const c of item.categories||[])counts.set(c,(counts.get(c)||0)+1);
+  return [...counts.entries()].sort((a,b)=>b[1]-a[1]).map(([tag])=>tag).slice(0,12);
+}
+
 function App(){
  const [when,setWhen]=useState(futureTime()); const [budget,setBudget]=useState('$$'); const [walk,setWalk]=useState(30); const [travel,setTravel]=useState<'walk'|'walk_t'>('walk_t'); const [text,setText]=useState(''); const [weather,setWeather]=useState<'clear'|'rain'>('clear'); const [data,setData]=useState<Result|null>(null); const [health,setHealth]=useState<any[]>([]); const [loading,setLoading]=useState(false); const [expanded,setExpanded]=useState<string|null>(null); const [modal,setModal]=useState(false); const [loc,setLoc]=useState(center); const [error,setError]=useState(''); const [neighborhood,setNeighborhood]=useState<Neighborhood|null>(null); const [neighborhoodBusy,setNeighborhoodBusy]=useState(false); const [whys,setWhys]=useState<Record<string,string>>({});
- async function load(){setLoading(true);setError('');try{const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({time:new Date(when).toISOString(),budget,lat:loc[0],lng:loc[1],max_walk_min:walk,travel,free_text:text||undefined,weather_override:weather==='rain'?'rain':undefined})});if(!res.ok)throw new Error('Could not load recommendations.');const result:Result=await res.json();setData(result);setHealth(current=>{const next=[...current];for(const item of result.sources_used){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next})}catch(e){setError(e instanceof Error?e.message:'Could not reach the Navigator API. Start the backend on port 8000.')}finally{setLoading(false)}}
+ const [saved,setSaved]=useState<SavedPlace[]>(()=>loadSaved());
+ const [showSaved,setShowSaved]=useState(false);
+ const [tiktokTags,setTiktokTags]=useState<string[]>([]);
+ const [tiktokMode,setTiktokMode]=useState<'disabled'|'demo'|'live'>('disabled');
+ const [tiktokBusy,setTiktokBusy]=useState(false);
+
+ const savedTags=useMemo(()=>tagsFromSaved(saved),[saved]);
+ const preferenceTags=useMemo(()=>{
+   const seen=new Set<string>(); const out:string[]=[];
+   for(const tag of [...tiktokTags,...savedTags]){if(!seen.has(tag)){seen.add(tag);out.push(tag)}}
+   return out.slice(0,12);
+ },[tiktokTags,savedTags]);
+ const savedIds=useMemo(()=>new Set(saved.map(s=>s.place_id)),[saved]);
+
+ function updateSaved(next:SavedPlace[]){setSaved(next);persistSaved(next)}
+ function toggleSave(v:Venue){
+   const id=placeIdFor(v);
+   if(savedIds.has(id))updateSaved(saved.filter(s=>s.place_id!==id));
+   else updateSaved([{place_id:id,name:v.name,categories:v.categories||[],address:v.address,price_level:v.price_level,saved_at:new Date().toISOString()},...saved]);
+ }
+ function unsave(id:string){updateSaved(saved.filter(s=>s.place_id!==id))}
+
+ async function refreshTiktok(forceDemo=false){
+  setTiktokBusy(true);
+  try{
+    const url=forceDemo?'/api/tiktok/preferences?demo=1':'/api/tiktok/preferences';
+    const res=await fetch(url,{credentials:'include'});
+    if(!res.ok){setTiktokTags([]);setTiktokMode('disabled');return}
+    const body=await res.json();
+    setTiktokTags(Array.isArray(body.preference_tags)?body.preference_tags:[]);
+    setTiktokMode(body.mode==='live'||body.mode==='demo'?body.mode:'disabled');
+    setHealth(current=>{
+      const next=[...current];
+      for(const item of body.sources_used||[]){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}
+      return next;
+    });
+  }catch{setTiktokTags([]);setTiktokMode('disabled')}
+  finally{setTiktokBusy(false)}
+ }
+
+ async function connectTiktok(){
+  setTiktokBusy(true);
+  try{
+    const demo=await fetch('/api/tiktok/demo',{method:'POST',credentials:'include'});
+    if(demo.ok){
+      const body=await demo.json();
+      if(body.connected&&(body.preference_tags||[]).length){
+        setTiktokTags(body.preference_tags||[]);
+        setTiktokMode(body.mode==='live'?'live':'demo');
+        setTiktokBusy(false);
+        return;
+      }
+    }
+  }catch{}
+  setTiktokBusy(false);
+  window.location.href='/api/tiktok/login';
+ }
+
+ async function disconnectTiktok(){
+  await fetch('/api/tiktok/logout',{method:'POST',credentials:'include'}).catch(()=>{});
+  setTiktokTags([]);setTiktokMode('disabled');
+ }
+
+ async function load(){
+  setLoading(true);setError('');
+  try{
+    const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({time:new Date(when).toISOString(),budget,lat:loc[0],lng:loc[1],max_walk_min:walk,travel,free_text:text||undefined,weather_override:weather==='rain'?'rain':undefined,preference_tags:preferenceTags.length?preferenceTags:undefined})});
+    if(res.status===429)throw new Error('Too many searches right now. Please wait a minute and try again.');
+    if(!res.ok)throw new Error('Could not load recommendations.');
+    const result:Result=await res.json();
+    setData(result);
+    setHealth(current=>{const next=[...current];for(const item of result.sources_used){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next});
+  }catch(e){setError(e instanceof Error?e.message:'Could not reach the Navigator API. Start the backend on port 8000.')}
+  finally{setLoading(false)}
+ }
+
+ useEffect(()=>{
+  const params=new URLSearchParams(window.location.search);
+  const flag=params.get('tiktok');
+  if(flag){window.history.replaceState({},'',window.location.pathname);if(flag==='demo')refreshTiktok(true);else if(flag==='connected'||flag==='error')refreshTiktok()}
+  else refreshTiktok();
+ },[]);
  useEffect(()=>{const refresh=()=>fetch('/api/sources/health').then(r=>r.json()).then(x=>setHealth(x.sources||[])).catch(()=>{});load();refresh();const timer=window.setInterval(refresh,30000);return()=>window.clearInterval(timer)},[]);
+ useEffect(()=>{if(data)load()},[preferenceTags.join('|')]);
+
  async function showDetails(){setModal(true);setNeighborhoodBusy(true);try{const params=new URLSearchParams({lat:String(loc[0]),lng:String(loc[1]),radius_m:'1500'});const response=await fetch(`/api/neighborhood?${params}`);if(!response.ok)throw new Error('Neighborhood data is unavailable');const result:any=await response.json();setNeighborhood(result);setHealth(current=>{const next=[...current];for(const item of result.sources_used||[]){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next})}catch{setNeighborhood(null)}finally{setNeighborhoodBusy(false)}}
- // Fetched only when a card is opened, so searches never wait on Gemini; failures keep the template line.
- // Keyed by the facts, not the venue: a new search with different facts never shows an old line. '' marks pending or failed, so each card asks once.
  const whyKey=(r:Rec)=>JSON.stringify(r.explain_facts);
  async function toggleWhy(r:Rec){const id=r.venue.id,key=whyKey(r);setExpanded(expanded===id?null:id);if(expanded===id||!r.explain_facts||key in whys)return;setWhys(w=>({...w,[key]:''}));try{const res=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:key});const out=await res.json();if(res.ok&&out.explanation)setWhys(w=>({...w,[key]:out.explanation}))}catch{}}
  const recs=data?.recommendations||[];
