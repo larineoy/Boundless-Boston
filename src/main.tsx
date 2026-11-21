@@ -19,7 +19,7 @@ const rideMin=(leg:Leg)=>leg.depart_at&&leg.arrive_at?Math.max(1,Math.round((Dat
 function GameRow({r}:{r:Rec}){
  const games=(r.score.components.events?.raw?.games as string[]|undefined)??[];
  if(!games.length) return null;
- return <div className="event-row">{games.map(g=><span key={g}><span aria-hidden="true">{g.startsWith('Red Sox')?'⚾':'🏒'}</span> {g}</span>)}</div>;
+ return <div className="event-row"><span className="event-label">Game nearby:</span>{games.map(g=><span key={g}>{g}</span>)}</div>;
 }
 function TransitRow({r}:{r:Rec}){
  const out=r.reachability.outbound, last=r.reachability.last_return;
