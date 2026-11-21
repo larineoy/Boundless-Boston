@@ -9,7 +9,8 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "tsc -b --pretty false",
     "preview": "vite preview --host 0.0.0.0",
-    "api": "uvicorn app.main:app --app-dir backend --reload --host 0.0.0.0 --port 8000"
+    "api": "uvicorn app.main:app --app-dir backend --reload --host 0.0.0.0 --port 8000",
+    "test": "node --test tests/saved-places.test.mjs"
   },
   "dependencies": {
     "@neon/config": "^1.14.5",

@@ -20,6 +20,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app import cool_finds as finds
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = os.getenv("APP_MODE", "demo") == "demo"
@@ -30,7 +31,7 @@ with sqlite3.connect(DB_PATH) as _db:
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
-SOURCES = ["google_places", "mbta", "open_meteo", "boston_ckan", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs"]
+SOURCES = ["google_places", "mbta", "open_meteo", "boston_ckan", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "tiktok", "youtube"]
 HEALTH: dict[str, dict[str, Any]] = {s: {"source": s, "status": "demo" if DEMO and s in SOURCES[:4] else "disabled", "checked_at": None, "last_success_at": None, "cache_age_s": None, "detail": "Fixture mode" if DEMO and s in SOURCES[:4] else "Not configured"} for s in SOURCES}
 FAILURES: dict[str, int] = {s: 0 for s in SOURCES}
 OPEN_UNTIL: dict[str, float] = {}
@@ -121,7 +122,7 @@ async def request_json(source: str, url: str, params: dict[str, Any] | None = No
         return None
     params = params or {}
     cache_key = normalized_params({"url": url, "params": params, "body": json_body, "method": method})
-    cache_allowed = source != "google_places"
+    cache_allowed = source not in {"google_places", "tiktok", "youtube", "gemini"}
     if clock.time() < OPEN_UNTIL.get(source, 0):
         cached_when_open = cache_get(source, cache_key) if cache_allowed else None
         HEALTH[source].update(status="open-circuit", detail="Circuit open for 60 seconds")
@@ -292,6 +293,30 @@ def walk_estimate_minutes(lat1: float, lng1: float, lat2: float, lng2: float) ->
     # Conservative street-grid multiplier over straight-line distance; always disclosed as an estimate.
     return max(1, math.ceil(haversine(lat1, lng1, lat2, lng2) * 1.3 / 78.0))
 
+def normalize_google_places(places, q):
+    result=[]
+    for p in places:
+        loc=p.get("location",{}); pl=p.get("priceLevel"); price={"PRICE_LEVEL_FREE":1,"PRICE_LEVEL_INEXPENSIVE":1,"PRICE_LEVEL_MODERATE":2,"PRICE_LEVEL_EXPENSIVE":3,"PRICE_LEVEL_VERY_EXPENSIVE":3}.get(pl)
+        latitude, longitude=loc.get("latitude"),loc.get("longitude")
+        if latitude is None or longitude is None: continue
+        hours=p.get("currentOpeningHours") or p.get("regularOpeningHours")
+        tz=p.get("timeZone",{}).get("id") if isinstance(p.get("timeZone"),dict) else None
+        types=p.get("types",[])
+        place_types=[str(t).casefold() for t in types]
+        if any("park" in t or "garden" in t for t in place_types):
+            indoor_outdoor="outdoor"
+        elif any(any(word in t for word in ("restaurant","cafe","bakery","bar","night_club","food")) for t in place_types):
+            indoor_outdoor="indoor"
+        else:
+            indoor_outdoor="unknown"
+        delta, velocity_meta=None,{"method":"unavailable","label":None,"missing_reason":"google_review_velocity_not_persisted_for_provider_compliance"}
+        provider_attrs=[{"source":"google_places","text":"Google Maps","url":"https://maps.google.com","required_logo":"Google Maps","translate_no":True}]
+        for attr in p.get("attributions",[]):
+            if attr.get("provider"):
+                provider_attrs.append({"source":"google_places","text":attr["provider"],"url":attr.get("providerUri")})
+        result.append({"id":p.get("id",str(uuid4())),"name":p.get("displayName",{}).get("text","Venue"),"lat":latitude,"lng":longitude,"address":p.get("formattedAddress"),"categories":types or [p.get("primaryType","venue")],"price_level":price,"rating":p.get("rating"),"review_count":p.get("userRatingCount"),"open_hours":{"status_at_requested_time":opening_at(hours,q.time,tz),"periods":(hours or {}).get("periods"),"timezone":tz},"indoor_outdoor":indoor_outdoor,"walk_min":walk_estimate_minutes(q.lat,q.lng,latitude,longitude),"walk_method":"straight_line_estimate","source_refs":[{"source":"google_places","external_id":p.get("id"),"url":p.get("googleMapsUri")}],"attributions":provider_attrs,"momentum_delta":delta,"momentum_meta":velocity_meta})
+    return result
+
 async def live_candidates(q: QueryInput) -> tuple[list[dict[str,Any]],bool]:
     key=os.getenv("GOOGLE_MAPS_API_KEY")
     if DEMO: return [dict(v) for v in FIXTURES], False
@@ -303,27 +328,7 @@ async def live_candidates(q: QueryInput) -> tuple[list[dict[str,Any]],bool]:
         data=await request_json("google_places","https://places.googleapis.com/v1/places:searchNearby",{},headers={"X-Goog-Api-Key":key,"X-Goog-FieldMask":"places.id,places.displayName,places.location,places.formattedAddress,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours,places.regularOpeningHours,places.primaryType,places.types,places.googleMapsUri,places.timeZone,places.attributions"},method="POST",json_body=body)
         if data is None:
             return [], False
-        result=[]
-        for p in data.get("places",[]):
-            loc=p.get("location",{}); pl=p.get("priceLevel"); price={"PRICE_LEVEL_FREE":1,"PRICE_LEVEL_INEXPENSIVE":1,"PRICE_LEVEL_MODERATE":2,"PRICE_LEVEL_EXPENSIVE":3,"PRICE_LEVEL_VERY_EXPENSIVE":3}.get(pl)
-            latitude, longitude=loc.get("latitude"),loc.get("longitude")
-            if latitude is None or longitude is None: continue
-            hours=p.get("currentOpeningHours") or p.get("regularOpeningHours")
-            tz=p.get("timeZone",{}).get("id") if isinstance(p.get("timeZone"),dict) else None
-            types=p.get("types",[])
-            place_types=[str(t).casefold() for t in types]
-            if any("park" in t or "garden" in t for t in place_types):
-                indoor_outdoor="outdoor"
-            elif any(any(word in t for word in ("restaurant","cafe","bakery","bar","night_club","food")) for t in place_types):
-                indoor_outdoor="indoor"
-            else:
-                indoor_outdoor="unknown"
-            delta, velocity_meta=None,{"method":"unavailable","label":None,"missing_reason":"google_review_velocity_not_persisted_for_provider_compliance"}
-            provider_attrs=[{"source":"google_places","text":"Google Maps","url":"https://maps.google.com","required_logo":"Google Maps","translate_no":True}]
-            for attr in p.get("attributions",[]):
-                if attr.get("provider"):
-                    provider_attrs.append({"source":"google_places","text":attr["provider"],"url":attr.get("providerUri")})
-            result.append({"id":p.get("id",str(uuid4())),"name":p.get("displayName",{}).get("text","Venue"),"lat":latitude,"lng":longitude,"address":p.get("formattedAddress"),"categories":types or [p.get("primaryType","venue")],"price_level":price,"rating":p.get("rating"),"review_count":p.get("userRatingCount"),"open_hours":{"status_at_requested_time":opening_at(hours,q.time,tz),"periods":(hours or {}).get("periods"),"timezone":tz},"indoor_outdoor":indoor_outdoor,"walk_min":walk_estimate_minutes(q.lat,q.lng,latitude,longitude),"walk_method":"straight_line_estimate","source_refs":[{"source":"google_places","external_id":p.get("id"),"url":p.get("googleMapsUri")}],"attributions":provider_attrs,"momentum_delta":delta,"momentum_meta":velocity_meta})
+        result=normalize_google_places(data.get("places", []), q)
         return result, False
     except Exception:
         HEALTH["google_places"].update(status="disabled",detail="Google Places unavailable")
@@ -730,3 +735,70 @@ async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=
     return envelope({"center":{"lat":lat,"lng":lng},"radius_m":radius_m,"311":{"period_start":(datetime.now(timezone.utc)-timedelta(days=90)).date().isoformat(),"period_end":datetime.now(timezone.utc).date().isoformat(),"top_categories":[{"category":"Street cleaning","count":42},{"category":"Pothole","count":28},{"category":"Sidewalk repair","count":19}]},"business_licenses":[{"name":"Newbury Street Cafe","issued_at":(datetime.now(timezone.utc)-timedelta(days=12)).date().isoformat(),"lat":42.351,"lng":-71.071,"source_ref":"demo-license-001"}],"city_contacts":[{"name":"311 Boston","service":"City services and non-emergency requests","phone":"311","url":"https://www.boston.gov/departments/boston-311","distance_m":0,"source_ref":"demo-contact-311"}]},["boston_ckan"])
 @app.get("/api/sources/health")
 def source_health() -> dict[str,Any]: return envelope({"sources":[HEALTH[s] for s in SOURCES]},[])
+
+
+@app.post('/api/cool-finds/intake')
+async def intake_find(payload: finds.Intake):
+    result = await finds.resolve(payload, request_json, DEMO, FIXTURES)
+    used = result.pop('used')
+    if DEMO:
+        for source in used: HEALTH[source].update(status='demo',detail='Synthetic Cool Finds fixture')
+    return envelope(result, used)
+
+
+@app.post('/api/cool-finds/select')
+async def select_find(payload: finds.Selection):
+    try: finds.verify_token(payload.confirmation_token,payload.source_url,payload.place_id)
+    except ValueError as exc: raise HTTPException(409,str(exc)) from None
+    return {'place_id':payload.place_id,'source_url':payload.source_url,'confirmation_status':'user_confirmed','mode':'demo' if DEMO else 'live'}
+
+
+async def find_details(place_id):
+    if DEMO:
+        v = next((dict(v) for v in FIXTURES if v['id']==place_id),None)
+        if not v: raise HTTPException(404,'This place is not available in demo mode. Add the video again in the original mode.')
+        return v
+    if place_id.startswith('demo-'): raise HTTPException(409,'Demo places cannot be verified live. Add the video again in live mode.')
+    key = os.getenv('GOOGLE_MAPS_API_KEY')
+    if not key: raise HTTPException(503,'Current place lookup is unavailable. Your saved idea is still kept.')
+    data = await request_json('google_places',f'https://places.googleapis.com/v1/places/{place_id}',headers={'X-Goog-Api-Key':key,'X-Goog-FieldMask':'id,displayName,location,formattedAddress,rating,userRatingCount,priceLevel,currentOpeningHours,regularOpeningHours,types,googleMapsUri,timeZone,attributions'})
+    if not data: raise HTTPException(503,'Current place details are unavailable. Try again later.')
+    if not finds.in_boston(data.get('location',{})): raise HTTPException(422,'Choose a destination in the Boston area')
+    return data
+
+
+@app.post('/api/cool-finds/refresh')
+async def refresh_find(payload: finds.PlaceRef):
+    source = finds.platform(payload.source_url)
+    if not source: raise HTTPException(422,'Use a TikTok or YouTube source link')
+    v = await find_details(payload.place_id)
+    place = finds.demo_candidate(v) if DEMO else finds.candidate(v)
+    result = finds.response(payload.source_url,source,[place],'Saved destination refreshed. Confirm it to check a new outing.','demo' if DEMO else 'live',used=[] if DEMO else ['google_places'])
+    used = result.pop('used')
+    return envelope(result,used)
+
+
+class FindPlan(finds.Selection):
+    query: QueryInput
+
+
+@app.post('/api/cool-finds/plan')
+async def plan_find(payload: FindPlan):
+    await select_find(payload)
+    data = await find_details(payload.place_id)
+    venues = [data] if DEMO else normalize_google_places([data],payload.query)
+    if not venues: raise HTTPException(404,'This destination has no usable location')
+    venue,q = venues[0],payload.query
+    weather = await forecast_for_query(q)
+    within_walk = venue['walk_min']<=q.max_walk_min
+    price = venue.get('price_level')
+    within_budget = None if price is None else price<={'$':1,'$$':2,'$$$':3}[q.budget]
+    hours = venue.get('open_hours',{}).get('status_at_requested_time','unknown')
+    stops = [] if DEMO else await mbta_nearby_stops(q.lat,q.lng)
+    reach = await assess_mbta_round_trip(q,venue,stops)
+    if not reach.get('reachable') and within_walk: reach={**reach,'reachable':True,'method':'walking_fallback'}
+    eligible = hours=='open' and within_budget is True and within_walk and bool(reach.get('reachable'))
+    return envelope({'venue':venue,'source_status':'demo' if DEMO else 'live','checks':{'hours':hours,'within_budget':within_budget,'within_walk':within_walk},'weather':weather,'reachability':reach,'eligible':eligible,
+      'message':'Fits your outing settings.' if eligible else 'Some outing checks did not pass. You can still keep this place for later.',
+      'route':{'minutes':venue['walk_min'],'label':'Approximate walking time; check current directions in Google Maps.',
+               'maps_uri':f'https://www.google.com/maps/dir/?api=1&destination={venue["lat"]},{venue["lng"]}&destination_place_id={payload.place_id}&travelmode=walking' if eligible and not DEMO else None}},['google_places','open_meteo','mbta'])
