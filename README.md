@@ -26,12 +26,15 @@ Open the Vite URL (normally `http://localhost:5173`). The frontend proxies `/api
 
 ## Current implementation
 
-- `backend/app/main.py`: FastAPI query, recommendations, neighborhood, and health endpoints; request validation; scoring; SQLite public response TTL cache; demo fixtures.
+- `backend/app/main.py`: FastAPI query, recommendations, neighborhood, health, and pipeline endpoints; request validation; scoring; SQLite public response TTL cache; demo fixtures.
+- `backend/app/staging.py`: durable API-to-app staging store for pipeline runs, source snapshots, and normalized venue records.
 - `src/`: React/Vite UI with responsive search, score breakdowns, map, weather override, source status, and attribution presentation.
 - `scoring/weights.yaml`: declared scoring weights.
 - `docs/architecture/` and `docs/SOURCES.md`: architecture and data handling decisions.
 
 `APP_MODE=demo` is the default and uses clearly labeled synthetic fixtures. Live mode is opt-in with `APP_MODE=live`. Live Tier 1 paths are implemented for Google Places, MBTA stops/routes/schedules/predictions/alerts, National Weather Service hourly forecasts, and Boston CKAN 311 and active food-establishment license data. Boston CKAN resource IDs are discovered dynamically with `package_show`. Transit eligibility uses paired scheduled trips, with prediction confirmation where available, or an explicitly approximate walking fallback. Google Places requires `GOOGLE_MAPS_API_KEY`; without it, live mode returns no Google candidates instead of substituting fixtures. Set `BOSTON_311_PACKAGE` and `BOSTON_LICENSE_PACKAGE` to override the CKAN package slugs. Live adapter acceptance still needs to run against the configured credentials and current source quotas before production use. Tier 2 event, routing, Yelp, and LLM integrations remain out of scope for this Tier 1 pass.
+
+Every recommendation run now writes a staging receipt to `STAGING_DB` (default `.cache/staging.sqlite3`) and returns it in the `/api/query` response. Use `GET /api/pipeline/status` to inspect the latest run. `POST /api/pipeline/refresh` uses the same adapter path for an explicit refresh; live deployments require `X-Pipeline-Token`.
 
 ## Deploy
 

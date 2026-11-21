@@ -19,9 +19,10 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.staging import StagingStore
 
 ROOT = Path(__file__).resolve().parents[2]
 SCORING = yaml.safe_load((ROOT / "scoring" / "weights.yaml").read_text())
@@ -29,8 +30,11 @@ assert abs(sum(SCORING["weights"].values()) - 1.0) < 1e-9, "scoring/weights.yaml
 DEMO = os.getenv("APP_MODE", "demo") == "demo"
 DB_PATH = Path(os.getenv("CACHE_DB", str(ROOT / ".cache" / "public-cache.sqlite3")))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+STAGING_DB_PATH = Path(os.getenv("STAGING_DB", str(ROOT / ".cache" / "staging.sqlite3")))
+STAGING = StagingStore(STAGING_DB_PATH)
 with sqlite3.connect(DB_PATH) as _db:
     _db.execute("CREATE TABLE IF NOT EXISTS cache(source TEXT,key TEXT,payload TEXT,fetched REAL,PRIMARY KEY(source,key))")
+STAGING.init()
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
@@ -44,6 +48,7 @@ CKAN_BASE = os.getenv("BOSTON_CKAN_URL", "https://data.boston.gov/api/3/action")
 MBTA_BASE = "https://api-v3.mbta.com"
 CKAN_RESOURCES: dict[str, dict[str, Any]] = {}
 CKAN_RESOLVED_AT = 0.0
+PIPELINE_TOKEN = os.getenv("PIPELINE_TOKEN")
 
 class QueryInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -844,10 +849,21 @@ async def forecast_for_query(q: QueryInput) -> dict[str, Any]:
         result["override"] = "cold"
     return result
 
-async def make_query(q: QueryInput) -> dict[str,Any]:
+async def make_query(q: QueryInput, trigger: str = "query") -> dict[str,Any]:
+    try:
+        pipeline_run_id: str | None = STAGING.start_run(trigger, f"{round(q.lat,4)}:{round(q.lng,4)}:{q.budget}:{q.max_walk_min}")
+    except Exception:
+        pipeline_run_id = None
     parsed=await parse_query_text(q.free_text)
     budget=parsed.get("budget",q.budget); walk=parsed.get("max_walk_min",q.max_walk_min)
     places,_=await live_candidates(q)
+    staged_venue_count = 0
+    if pipeline_run_id:
+        try:
+            STAGING.stage_snapshot(pipeline_run_id, "google_places", places, status=HEALTH["google_places"]["status"], ttl_seconds=300)
+            staged_venue_count = STAGING.stage_venues(pipeline_run_id, "google_places", places)
+        except Exception:
+            pipeline_run_id = None
     # Google Places coordinates must not go to a non-Google routing service (Maps ToS 3.2.3(a),(c)), so only
     # non-Google candidates are routed; Google venues keep the labeled straight-line estimate.
     to_route=[v for v in places if routable(v)]
@@ -855,7 +871,17 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     for venue,minutes in zip(to_route,routed or []):
         if minutes is not None:
             venue["walk_min"],venue["walk_method"]=minutes,"routed"
+    if pipeline_run_id and to_route:
+        try:
+            STAGING.stage_snapshot(pipeline_run_id, "routing", {"requested": len(to_route), "routed": sum(minutes is not None for minutes in (routed or []))}, status=HEALTH["routing"]["status"], ttl_seconds=1800)
+        except Exception:
+            pass
     weather=await forecast_for_query(q)
+    if pipeline_run_id:
+        try:
+            STAGING.stage_snapshot(pipeline_run_id, "nws", weather, status=HEALTH["nws"]["status"], ttl_seconds=600)
+        except Exception:
+            pass
     max_price={"$":1,"$$":2,"$$$":3}[budget]
     pre_candidates=[]
     for venue in places:
@@ -892,8 +918,14 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     candidates=candidates[:8]
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
+    if pipeline_run_id:
+        try:
+            STAGING.stage_snapshot(pipeline_run_id, "mbta", plans, status=HEALTH["mbta"]["status"], ttl_seconds=60)
+            STAGING.finish_run(pipeline_run_id, status="succeeded", detail=f"{len(candidates)} eligible recommendations")
+        except Exception:
+            pass
     used=["google_places","mbta","nws"]+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])
-    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
+    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather,"pipeline":{"run_id":pipeline_run_id,"staged_sources":["google_places","nws","mbta"] if pipeline_run_id else [],"staged_venue_count":staged_venue_count,"status":"succeeded" if pipeline_run_id else "unavailable"}},used)
 
 @app.on_event("startup")
 async def discover_boston_resources() -> None:
@@ -903,6 +935,14 @@ async def discover_boston_resources() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str,str]: return {"status":"ok"}
+@app.get("/api/pipeline/status")
+def pipeline_status() -> dict[str,Any]: return envelope(STAGING.status(), [])
+@app.post("/api/pipeline/refresh")
+async def pipeline_refresh(q: QueryInput, x_pipeline_token: str | None = Header(default=None, alias="X-Pipeline-Token")) -> dict[str,Any]:
+    if not DEMO and (not PIPELINE_TOKEN or x_pipeline_token != PIPELINE_TOKEN):
+        raise HTTPException(status_code=403, detail="Pipeline refresh is restricted")
+    result = await make_query(q, trigger="manual_refresh")
+    return {"pipeline": result.get("pipeline"), "generated_at": result["generated_at"], "sources_used": result["sources_used"]}
 @app.post("/api/query")
 async def query(q: QueryInput) -> dict[str,Any]: return await make_query(q)
 @app.post("/api/explain")
@@ -914,9 +954,31 @@ async def recommendations(time: datetime, budget: Literal["$","$$","$$$"], lat: 
     return await make_query(QueryInput(time=time,budget=budget,lat=lat,lng=lng,max_walk_min=max_walk_min,free_text=free_text,weather_override=weather_override))
 @app.get("/api/neighborhood")
 async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=180),radius_m:int=Query(ge=50,le=5000)) -> dict[str,Any]:
+    pipeline_run_id: str | None
+    try:
+        pipeline_run_id = STAGING.start_run("neighborhood", f"{round(lat,4)}:{round(lng,4)}:{radius_m}")
+    except Exception:
+        pipeline_run_id = None
     if not DEMO:
         result=await live_neighborhood(lat,lng,radius_m)
+        if pipeline_run_id:
+            try:
+                if result.get("311") is not None: STAGING.stage_snapshot(pipeline_run_id, "boston_ckan", result["311"], status=HEALTH["boston_ckan"]["status"], ttl_seconds=86400)
+                if result.get("business_licenses") is not None: STAGING.stage_snapshot(pipeline_run_id, "boston_ckan", result["business_licenses"], status=HEALTH["boston_ckan"]["status"], ttl_seconds=86400)
+                STAGING.finish_run(pipeline_run_id, status="succeeded", detail="neighborhood snapshot")
+            except Exception:
+                pass
+        result["pipeline"] = {"run_id": pipeline_run_id, "staged_sources":["boston_ckan"] if pipeline_run_id else [], "status":"succeeded" if pipeline_run_id else "unavailable"}
         return envelope(result,["boston_ckan"])
-    return envelope({"center":{"lat":lat,"lng":lng},"radius_m":radius_m,"311":{"period_start":(datetime.now(timezone.utc)-timedelta(days=90)).date().isoformat(),"period_end":datetime.now(timezone.utc).date().isoformat(),"top_categories":[{"category":"Street cleaning","count":42},{"category":"Pothole","count":28},{"category":"Sidewalk repair","count":19}]},"business_licenses":[{"name":"Newbury Street Cafe","issued_at":(datetime.now(timezone.utc)-timedelta(days=12)).date().isoformat(),"lat":42.351,"lng":-71.071,"source_ref":"demo-license-001"}],"city_contacts":[{"name":"311 Boston","service":"City services and non-emergency requests","phone":"311","url":"https://www.boston.gov/departments/boston-311","distance_m":0,"source_ref":"demo-contact-311"}]},["boston_ckan"])
+    result={"center":{"lat":lat,"lng":lng},"radius_m":radius_m,"311":{"period_start":(datetime.now(timezone.utc)-timedelta(days=90)).date().isoformat(),"period_end":datetime.now(timezone.utc).date().isoformat(),"top_categories":[{"category":"Street cleaning","count":42},{"category":"Pothole","count":28},{"category":"Sidewalk repair","count":19}]},"business_licenses":[{"name":"Newbury Street Cafe","issued_at":(datetime.now(timezone.utc)-timedelta(days=12)).date().isoformat(),"lat":42.351,"lng":-71.071,"source_ref":"demo-license-001"}],"city_contacts":[{"name":"311 Boston","service":"City services and non-emergency requests","phone":"311","url":"https://www.boston.gov/departments/boston-311","distance_m":0,"source_ref":"demo-contact-311"}]}
+    if pipeline_run_id:
+        try:
+            STAGING.stage_snapshot(pipeline_run_id, "boston_ckan", result["311"], status="demo", ttl_seconds=86400)
+            STAGING.stage_snapshot(pipeline_run_id, "boston_ckan", result["business_licenses"], status="demo", ttl_seconds=86400)
+            STAGING.finish_run(pipeline_run_id, status="succeeded", detail="demo neighborhood snapshot")
+        except Exception:
+            pass
+    result["pipeline"]={"run_id":pipeline_run_id,"staged_sources":["boston_ckan"] if pipeline_run_id else [],"status":"succeeded" if pipeline_run_id else "unavailable"}
+    return envelope(result,["boston_ckan"])
 @app.get("/api/sources/health")
 def source_health() -> dict[str,Any]: return envelope({"sources":[HEALTH[s] for s in SOURCES]},[])
