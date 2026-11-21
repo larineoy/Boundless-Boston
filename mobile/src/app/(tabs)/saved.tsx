@@ -12,6 +12,7 @@ import {
 } from "../../components/ui";
 import { VenueCard } from "../../components/VenueCard";
 import { usePlanner } from "../../lib/planner";
+import { PlasmaBackground } from "../../components/plasma";
 
 export default function SavedScreen() {
   const { savedIds, sessionPlaces, storageError, storageReady, toggleSaved } =
@@ -20,6 +21,7 @@ export default function SavedScreen() {
   const missing = savedIds.filter((id) => !sessionPlaces[id]);
   return (
     <SafeAreaView style={s.screen} edges={["top"]}>
+      <PlasmaBackground />
       <Header />
       <ScrollView contentContainerStyle={s.content}>
         <View style={{ gap: 10, paddingTop: 28 }}>

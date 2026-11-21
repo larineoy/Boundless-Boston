@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app import cool_finds as finds
+from app import saved_places
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = os.getenv("APP_MODE", "demo") == "demo"
@@ -29,7 +30,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 with sqlite3.connect(DB_PATH) as _db:
     _db.execute("CREATE TABLE IF NOT EXISTS cache(source TEXT,key TEXT,payload TEXT,fetched REAL,PRIMARY KEY(source,key))")
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type", "X-Saved-Places"])
 
 SOURCES = ["google_places", "mbta", "open_meteo", "boston_ckan", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "tiktok", "youtube"]
 HEALTH: dict[str, dict[str, Any]] = {s: {"source": s, "status": "demo" if DEMO and s in SOURCES[:4] else "disabled", "checked_at": None, "last_success_at": None, "cache_age_s": None, "detail": "Fixture mode" if DEMO and s in SOURCES[:4] else "Not configured"} for s in SOURCES}
@@ -735,6 +736,13 @@ async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=
     return envelope({"center":{"lat":lat,"lng":lng},"radius_m":radius_m,"311":{"period_start":(datetime.now(timezone.utc)-timedelta(days=90)).date().isoformat(),"period_end":datetime.now(timezone.utc).date().isoformat(),"top_categories":[{"category":"Street cleaning","count":42},{"category":"Pothole","count":28},{"category":"Sidewalk repair","count":19}]},"business_licenses":[{"name":"Newbury Street Cafe","issued_at":(datetime.now(timezone.utc)-timedelta(days=12)).date().isoformat(),"lat":42.351,"lng":-71.071,"source_ref":"demo-license-001"}],"city_contacts":[{"name":"311 Boston","service":"City services and non-emergency requests","phone":"311","url":"https://www.boston.gov/departments/boston-311","distance_m":0,"source_ref":"demo-contact-311"}]},["boston_ckan"])
 @app.get("/api/sources/health")
 def source_health() -> dict[str,Any]: return envelope({"sources":[HEALTH[s] for s in SOURCES]},[])
+
+
+app.include_router(saved_places.router)
+
+@app.on_event('shutdown')
+def close_saved_places_pool():
+    saved_places.close_pool()
 
 
 @app.post('/api/cool-finds/intake')

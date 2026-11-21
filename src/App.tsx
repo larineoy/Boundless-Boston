@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Plasma, PlasmaProvider, usePlasmaRuntime } from "@cruxgarden/plasma-ui";
 import { CoolFinds } from "./CoolFinds";
 import { SavedPlaces } from "./SavedPlaces";
 import { useSavedPlaces } from "./useSavedPlaces";
@@ -115,6 +116,7 @@ const futureTime = () => {
   return d.toISOString().slice(0, 16);
 };
 export default function App() {
+  const { pulse } = usePlasmaRuntime();
   const collection = useSavedPlaces();
   const [page, setPage] = useState(() =>
     window.location.hash === "#/saved"
@@ -161,6 +163,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [neighborhood, setNeighborhood] = useState<Neighborhood | null>(null);
   const [neighborhoodBusy, setNeighborhoodBusy] = useState(false);
+  useEffect(() => {
+    if (weather === "rain") pulse(0.78, 0.22, 0.9);
+  }, [pulse, weather]);
   function queryBody() {
     return {
       time: new Date(when).toISOString(),
@@ -251,10 +256,16 @@ export default function App() {
   }
   const recs = data?.recommendations || [];
   const outingControls = (
-    <section className="planner panel">
+    <Plasma
+      as="section"
+      className="planner panel"
+      lean={false}
+      fuse={false}
+      radius={28}
+    >
       <div className="panel-heading">
         <div>
-          <span className="section-kicker">01 — MAKE IT A NIGHT</span>
+          <span className="section-kicker">MAKE IT A NIGHT</span>
           <h2>Find your somewhere.</h2>
         </div>
         <span className="step-count">
@@ -336,10 +347,9 @@ export default function App() {
         </div>
         <button className="submit-button" onClick={load} disabled={loading}>
           {loading ? "Finding places…" : "Find my night"}{" "}
-          <ArrowUpRight size={17} />
         </button>
       </div>
-    </section>
+    </Plasma>
   );
   return (
     <div className="app-shell">
@@ -455,7 +465,7 @@ export default function App() {
                 {outingControls}
                 <div className="section-head">
                   <div>
-                    <span className="section-kicker">02 — YOUR SHORTLIST</span>
+                    <span className="section-kicker">YOUR SHORTLIST</span>
                     <h2>{text ? "A few good fits." : "The night is yours."}</h2>
                   </div>
                   <button
@@ -483,10 +493,16 @@ export default function App() {
                   </div>
                 )}
                 <div className="content-grid">
-                  <section className="results-list">
+                  <Plasma
+                    as="section"
+                    className="results-list panel"
+                    lean={false}
+                    fuse={false}
+                    radius={28}
+                  >
                     {recs.map((r, i) => (
                       <article
-                        className={`venue-card panel ${expanded === r.venue.id ? "expanded" : ""}`}
+                        className={`venue-card ${expanded === r.venue.id ? "expanded" : ""}`}
                         key={r.venue.id}
                       >
                         <div className="card-index">0{i + 1}</div>
@@ -616,7 +632,7 @@ export default function App() {
                         </div>
                       </article>
                     ))}
-                  </section>
+                  </Plasma>
                   <aside className="map-column">
                     <div className="map-label">
                       <span className="section-kicker">AROUND YOU</span>
@@ -624,7 +640,12 @@ export default function App() {
                         <Crosshair size={14} /> Recenter
                       </button>
                     </div>
-                    <div className="map-frame">
+                    <Plasma
+                      className="map-frame"
+                      lean={false}
+                      fuse={false}
+                      radius={28}
+                    >
                       <MapContainer
                         center={loc}
                         zoom={14}
@@ -650,8 +671,11 @@ export default function App() {
                       <div className="map-caption">
                         <span className="map-pulse" /> AREA VIEW · OPENSTREETMAP
                       </div>
-                    </div>
-                    <button
+                    </Plasma>
+                    <Plasma
+                      as="button"
+                      lean={false}
+                      fuse={false}
                       className="neighborhood panel"
                       onClick={showDetails}
                     >
@@ -663,10 +687,16 @@ export default function App() {
                         <b>Neighborhood notes</b>
                       </span>
                       <ChevronRight size={17} />
-                    </button>
+                    </Plasma>
                   </aside>
                 </div>
-                <section className="sources panel">
+                <Plasma
+                  as="section"
+                  className="sources panel"
+                  lean={false}
+                  fuse={false}
+                  radius={28}
+                >
                   <div className="sources-title">
                     <span className="section-kicker">THE SIGNAL CHECK</span>
                     <h3>Where this comes from.</h3>
@@ -717,7 +747,7 @@ export default function App() {
                       City of Boston Open Data
                     </a>
                   </p>
-                </section>
+                </Plasma>
               </>
             )}
           </>
@@ -732,8 +762,28 @@ export default function App() {
         </span>
       </footer>
       {modal && (
-        <div className="modal-backdrop" onClick={() => setModal(false)}>
-          <section className="modal panel" onClick={(e) => e.stopPropagation()}>
+        <PlasmaProvider
+          ground="clear"
+          maxSurfaces={3}
+          theme="dark"
+          tint="#b0f4dc"
+          opacity={0.18}
+          frost={0.5}
+          rim={0.8}
+          rimColor="iridescent"
+          glow={0.25}
+          quality={0.65}
+          canvas={false}
+        >
+          <div className="modal-backdrop" onClick={() => setModal(false)}>
+          <Plasma
+            as="section"
+            className="modal panel"
+            lean={false}
+            fuse={false}
+            radius={28}
+            onClick={(e) => e.stopPropagation()}
+          >
             <button className="modal-close" onClick={() => setModal(false)}>
               <X size={18} />
             </button>
@@ -791,8 +841,9 @@ export default function App() {
                 figures are being substituted.
               </p>
             )}
-          </section>
-        </div>
+          </Plasma>
+          </div>
+        </PlasmaProvider>
       )}
     </div>
   );

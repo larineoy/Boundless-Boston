@@ -1,12 +1,6 @@
 import { useEffect, useState } from "react";
 import { router } from "expo-router";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   Button,
@@ -21,6 +15,7 @@ import {
 import { getNeighborhood } from "../lib/api";
 import { SOURCE_NAMES, usePlanner } from "../lib/planner";
 import type { Neighborhood } from "../lib/types";
+import { PlasmaBackground, PlasmaPressable } from "../components/plasma";
 
 export default function SourcesScreen() {
   const { sources, mergeSources, location } = usePlanner();
@@ -54,16 +49,17 @@ export default function SourcesScreen() {
   }, [location, mergeSources, attempt]);
   return (
     <SafeAreaView style={s.screen}>
+      <PlasmaBackground />
       <View style={[s.header, { justifyContent: "space-between" }]}>
         <Label>TRUST, IN THE DETAILS</Label>
-        <Pressable
+        <PlasmaPressable
           accessibilityRole="button"
           accessibilityLabel="Close source details"
           onPress={() => router.back()}
           style={s.iconButton}
         >
           <Icon name="x" color={colors.text} />
-        </Pressable>
+        </PlasmaPressable>
       </View>
       <ScrollView contentContainerStyle={s.content}>
         <View style={{ gap: 12, paddingTop: 24 }}>

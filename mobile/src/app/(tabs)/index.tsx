@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import * as Location from "expo-location";
+import { WalkingSlider } from "../../components/WalkingSlider";
 import {
   ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -27,12 +27,26 @@ import {
   s,
   serif,
 } from "../../components/ui";
+import {
+  PlasmaPressable,
+  PlasmaBackground,
+  PlasmaSegments,
+  PlasmaSurface,
+  PlasmaSwitch,
+} from "../../components/plasma";
 import { VenueCard } from "../../components/VenueCard";
 
+const budgets = ["$", "$$", "$$$"] as const;
+const vibes = [
+  { text: "Coffee", icon: "coffee", query: "coffee" },
+  { text: "Noodles", icon: "sun", query: "ramen" },
+  { text: "A little fresh air", icon: "wind", query: "park" },
+] as const;
 export default function TonightScreen() {
   const p = usePlanner();
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
+  const [focused, setFocused] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 60000);
@@ -51,7 +65,7 @@ export default function TonightScreen() {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
         setLocationError(
-          "Location access is off. You can still plan from Downtown Boston.",
+          "Location access is off. You can still choose Downtown Boston.",
         );
         return;
       }
@@ -73,6 +87,7 @@ export default function TonightScreen() {
   }
   return (
     <SafeAreaView style={s.screen} edges={["top"]}>
+      <PlasmaBackground />
       <Header />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -80,6 +95,7 @@ export default function TonightScreen() {
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
           contentContainerStyle={s.content}
           refreshControl={
             <RefreshControl
@@ -98,60 +114,102 @@ export default function TonightScreen() {
               Boston after{"\n"}
               <Text style={styles.italic}>hours.</Text>
             </Text>
-            <Text style={[s.body, { maxWidth: 280 }]}>
-              Good plans start with a place.{"\n"}Great ones get you home.
-            </Text>
-            <View style={styles.moon}>
-              <Icon name="moon" size={28} />
+            <View style={styles.heroHeading}>
+              <Text style={[s.body, { flex: 1 }]}>
+                Good plans start with a place.{"\n"}Great ones get you home.
+              </Text>
+              <PlasmaSurface radius={36} contentStyle={styles.orbit}>
+                <Icon name="moon" size={27} />
+              </PlasmaSurface>
             </View>
           </View>
           <Panel>
             <View style={styles.heading}>
               <View style={{ gap: 5 }}>
-                <Label>01 — MAKE IT A NIGHT</Label>
+                <Label>01 / YOUR NIGHT STARTS HERE</Label>
                 <Text style={styles.panelTitle}>Find your somewhere.</Text>
               </View>
-              <Icon name="sun" />
+              <Icon name="sun" size={22} />
             </View>
-            <View style={{ gap: 8 }}>
-              <Label>THE VIBE</Label>
-              <View style={styles.inputWrap}>
-                <Icon name="search" size={16} color={colors.muted} />
+            <View style={{ gap: 10 }}>
+              <Label>WHAT ARE YOU IN THE MOOD FOR?</Label>
+              <View
+                style={[
+                  styles.inputWrap,
+                  focused && {
+                    borderColor: "#c6f36a99",
+                    backgroundColor: "#27472b80",
+                  },
+                ]}
+              >
+                <Icon name="search" size={17} color={colors.muted} />
                 <TextInput
                   accessibilityLabel="The vibe"
-                  placeholder="ramen, coffee, somewhere cozy…"
+                  placeholder="A place, a craving, a little adventure…"
                   placeholderTextColor={colors.dim}
                   value={p.filters.text}
                   onChangeText={(text) => update({ text })}
+                  onFocus={() => setFocused(true)}
+                  onBlur={() => setFocused(false)}
                   onSubmitEditing={find}
                   maxLength={300}
                   returnKeyType="search"
                   style={styles.input}
                 />
               </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 7 }}
+              >
+                {vibes.map((vibe) => (
+                  <PlasmaPressable
+                    key={vibe.query}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Vibe ${vibe.text}`}
+                    selected={p.filters.text === vibe.query}
+                    onPress={() =>
+                      update({
+                        text: p.filters.text === vibe.query ? "" : vibe.query,
+                      })
+                    }
+                    style={{ minHeight: 38 }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <Icon name={vibe.icon} size={12} color={colors.muted} />
+                      <Text style={s.caption}>{vibe.text}</Text>
+                    </View>
+                  </PlasmaPressable>
+                ))}
+              </ScrollView>
             </View>
-            <View style={{ gap: 9 }}>
-              <Label>WHEN · YOUR LOCAL TIME</Label>
+            <View style={{ gap: 10 }}>
+              <Label>WHEN / YOUR LOCAL TIME</Label>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ gap: 8 }}
               >
                 {[1, 2, 4, 8, 12].map((hours) => (
-                  <Pressable
+                  <PlasmaPressable
                     key={hours}
                     accessibilityRole="button"
                     accessibilityState={{ selected: p.filters.hours === hours }}
                     onPress={() => update({ hours })}
-                    style={[
-                      styles.chip,
-                      p.filters.hours === hours && styles.selected,
-                    ]}
+                    selected={p.filters.hours === hours}
+                    radius={18}
+                    style={{ minWidth: 94 }}
                   >
                     <Text
                       style={[
                         styles.chipText,
-                        p.filters.hours === hours && styles.selectedText,
+                        p.filters.hours === hours && { color: colors.lime },
                       ]}
                     >
                       {hours === 1 ? "In an hour" : `In ${hours} hours`}
@@ -162,92 +220,71 @@ export default function TonightScreen() {
                         { hour: "numeric", minute: "2-digit" },
                       )}
                     </Text>
-                  </Pressable>
+                  </PlasmaPressable>
                 ))}
               </ScrollView>
             </View>
             <View style={{ gap: 9 }}>
-              <Label>SPEND</Label>
-              <View style={styles.options}>
-                {(["$", "$$", "$$$"] as const).map((budget) => (
-                  <Pressable
-                    key={budget}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Budget ${budget}`}
-                    accessibilityState={{
-                      selected: p.filters.budget === budget,
-                    }}
-                    onPress={() => update({ budget })}
-                    style={[
-                      styles.option,
-                      p.filters.budget === budget && styles.selected,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        p.filters.budget === budget && styles.selectedText,
-                      ]}
-                    >
-                      {budget}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+              <Label>A LITTLE OR A LITTLE EXTRA?</Label>
+              <PlasmaSegments
+                label="Budget"
+                value={p.filters.budget}
+                options={budgets}
+                onValueChange={(budget) => update({ budget })}
+              />
             </View>
-            <View style={styles.walk}>
-              <View style={{ gap: 4 }}>
+            <View style={{ gap: 5 }}>
+              <View style={styles.heading}>
                 <Label>HOW FAR ON FOOT</Label>
                 <Text style={styles.walkValue}>
-                  {p.filters.walk} <Text style={s.caption}>min</Text>
+                  {p.filters.walk}
+                  <Text style={s.caption}> MIN</Text>
                 </Text>
               </View>
-              <View style={s.row}>
-                {([-5, 5] as const).map((delta) => (
-                  <Pressable
-                    key={delta}
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      delta < 0
-                        ? "Walk five minutes less"
-                        : "Walk five minutes more"
-                    }
-                    disabled={
-                      p.filters.walk + delta < 5 || p.filters.walk + delta > 45
-                    }
-                    onPress={() => update({ walk: p.filters.walk + delta })}
-                    style={[
-                      styles.step,
-                      (p.filters.walk + delta < 5 ||
-                        p.filters.walk + delta > 45) && { opacity: 0.3 },
-                    ]}
-                  >
-                    <Icon name={delta < 0 ? "minus" : "plus"} size={18} />
-                  </Pressable>
-                ))}
+              <WalkingSlider
+                value={p.filters.walk}
+                onChange={(walk) => update({ walk })}
+              />
+              <View style={styles.heading}>
+                <Text style={styles.rangeLabel}>SHORT STROLL</Text>
+                <Text style={styles.rangeLabel}>LONGER WANDER</Text>
               </View>
+            </View>
+            <View style={styles.rain}>
+              <View style={s.row}>
+                <Icon name="cloud-rain" size={17} color={colors.muted} />
+                <View>
+                  <Text style={styles.chipText}>Plan for rain</Text>
+                  <Text style={s.caption}>Prefer an indoor kind of night</Text>
+                </View>
+              </View>
+              <PlasmaSwitch
+                value={p.filters.rain}
+                onValueChange={(rain) => update({ rain })}
+                label="Rain override for next search"
+              />
             </View>
             <View style={styles.location}>
               <Icon name="map-pin" size={15} />
               <Text style={[s.caption, { flex: 1 }]}>{p.locationLabel}</Text>
-              <Pressable
+              <PlasmaPressable
                 accessibilityRole="button"
                 accessibilityLabel="Use current location"
                 disabled={locating}
                 onPress={() => {
                   void locate();
                 }}
-                style={s.iconButton}
+                radius={23}
               >
                 {locating ? (
                   <ActivityIndicator color={colors.lime} />
                 ) : (
-                  <Icon name="crosshair" size={18} />
+                  <Icon name="crosshair" size={17} />
                 )}
-              </Pressable>
+              </PlasmaPressable>
             </View>
             {p.locationLabel !== "Downtown Boston" && (
-              <Pressable
+              <PlasmaPressable
                 accessibilityRole="button"
                 onPress={() => {
                   p.setLocation(BOSTON);
@@ -255,7 +292,7 @@ export default function TonightScreen() {
                 }}
               >
                 <Text style={s.link}>Use Downtown Boston</Text>
-              </Pressable>
+              </PlasmaPressable>
             )}
             {!!locationError && <Notice>{locationError}</Notice>}
             <Button
@@ -264,29 +301,15 @@ export default function TonightScreen() {
               disabled={p.loading}
             />
           </Panel>
-          <View style={[styles.heading, { marginTop: 16 }]}>
+          <View style={[styles.heading, { marginTop: 10 }]}>
             <View style={{ gap: 7 }}>
-              <Label>02 — YOUR SHORTLIST</Label>
+              <Label>02 / CURATED FOR YOUR PLAN</Label>
               <Text style={styles.panelTitle}>The night is yours.</Text>
             </View>
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityLabel="Rain override for next search"
-              accessibilityState={{ checked: p.filters.rain }}
-              onPress={() => update({ rain: !p.filters.rain })}
-              style={styles.weather}
-            >
-              <Icon name={p.filters.rain ? "cloud-rain" : "moon"} size={15} />
-              <Text style={s.caption}>
-                {p.filters.rain ? "Rain check" : "Forecast"}
-              </Text>
-            </Pressable>
+            <PlasmaSurface radius={23} contentStyle={{ padding: 12, gap: 0 }}>
+              <Icon name={p.filters.rain ? "cloud-rain" : "moon"} size={18} />
+            </PlasmaSurface>
           </View>
-          {p.filters.rain && (
-            <Text style={s.caption}>
-              Rain override will apply when you find your night.
-            </Text>
-          )}
           {!!p.error && (
             <Notice>
               {p.error}
@@ -304,19 +327,24 @@ export default function TonightScreen() {
             </Panel>
           )}
           {p.result && (
-            <Text style={s.caption}>
-              {p.result.recommendations.length} places · Updated{" "}
-              {new Date(p.result.generated_at).toLocaleTimeString([], {
-                hour: "numeric",
-                minute: "2-digit",
-              })}
-              {p.result.weather.temperature_f != null
-                ? ` · ${Math.round(p.result.weather.temperature_f)}°F`
-                : ""}
-              {p.result.sources_used.some((source) => source.status === "demo")
-                ? " · Demo data"
-                : ""}
-            </Text>
+            <View style={styles.resultMeta}>
+              <View style={styles.pip} />
+              <Text style={[s.caption, { flex: 1 }]}>
+                {p.result.recommendations.length} places · Updated{" "}
+                {new Date(p.result.generated_at).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+                {p.result.weather.temperature_f != null
+                  ? ` · ${Math.round(p.result.weather.temperature_f)}°F`
+                  : ""}
+                {p.result.sources_used.some(
+                  (source) => source.status === "demo",
+                )
+                  ? " · Demo data"
+                  : ""}
+              </Text>
+            </View>
           )}
           {p.result?.empty_message && (
             <Panel>
@@ -327,8 +355,8 @@ export default function TonightScreen() {
           {p.result?.recommendations.map((r, index) => (
             <VenueCard key={r.venue.id} recommendation={r} index={index} />
           ))}
-          <Text style={[s.label, { textAlign: "center", marginTop: 12 }]}>
-            MADE FOR THE WAY HOME ↘
+          <Text style={[s.label, { textAlign: "center", marginTop: 10 }]}>
+            A LITTLE MORE CITY. A LITTLE MORE YOU. ↗
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -336,28 +364,25 @@ export default function TonightScreen() {
   );
 }
 const styles = StyleSheet.create({
-  hero: { paddingTop: 30, paddingBottom: 12, gap: 18 },
+  hero: { paddingTop: 22, paddingBottom: 5, gap: 17 },
   pip: { height: 5, width: 5, borderRadius: 3, backgroundColor: colors.lime },
+  heroHeading: { gap: 12, flexDirection: "row", alignItems: "flex-end" },
   heroTitle: {
+    flex: 1,
     color: colors.text,
-    fontSize: 59,
-    lineHeight: 62,
-    letterSpacing: -3,
+    fontSize: 52,
+    lineHeight: 56,
+    letterSpacing: -2.7,
     fontWeight: "500",
   },
   italic: { fontFamily: serif, fontStyle: "italic", color: colors.lime },
-  moon: {
-    position: "absolute",
-    top: 140,
-    right: 4,
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    borderWidth: 1,
-    borderColor: "#4b6138",
+  orbit: {
+    width: 65,
+    height: 65,
+    padding: 0,
+    gap: 0,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#202b1c",
   },
   heading: {
     flexDirection: "row",
@@ -365,69 +390,41 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
   },
-  panelTitle: { color: colors.text, fontSize: 23, letterSpacing: -0.7 },
+  panelTitle: { color: colors.text, fontSize: 23, letterSpacing: -0.8 },
   inputWrap: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    borderBottomWidth: 1,
-    borderColor: "#526047",
-  },
-  input: { flex: 1, minHeight: 48, color: colors.text, fontSize: 14 },
-  options: { flexDirection: "row", gap: 8 },
-  option: {
-    flex: 1,
-    minHeight: 46,
-    alignItems: "center",
-    justifyContent: "center",
     borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 8,
+    borderColor: "#aad5be30",
+    borderRadius: 16,
+    paddingHorizontal: 13,
+    backgroundColor: "#071e1670",
   },
-  chip: {
-    minWidth: 94,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 9,
-    gap: 5,
+  input: { flex: 1, minHeight: 52, color: colors.text, fontSize: 13 },
+  chipText: { color: colors.text, fontSize: 13, fontWeight: "500" },
+  chipTime: { color: colors.muted, fontSize: 10, marginTop: 6 },
+  walkValue: { fontFamily: mono, fontSize: 21, color: colors.lime },
+  rangeLabel: {
+    fontFamily: mono,
+    color: colors.dim,
+    fontSize: 8,
+    letterSpacing: 0.8,
   },
-  selected: { backgroundColor: "#303e24", borderColor: "#829d51" },
-  selectedText: { color: colors.lime },
-  chipText: { color: colors.muted, fontSize: 13, fontWeight: "500" },
-  chipTime: { color: colors.muted, fontSize: 10 },
-  walk: {
+  rain: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 3,
-  },
-  walkValue: { fontFamily: mono, fontSize: 25, color: colors.lime },
-  step: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
+    gap: 8,
+    paddingVertical: 12,
+    borderTopWidth: 1,
     borderColor: colors.line,
-    borderRadius: 22,
   },
   location: {
     flexDirection: "row",
     alignItems: "center",
     gap: 9,
-    borderTopWidth: 1,
-    borderColor: colors.line,
-    paddingTop: 8,
+    paddingTop: 2,
   },
-  weather: {
-    flexDirection: "row",
-    gap: 7,
-    alignItems: "center",
-    minHeight: 44,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: 22,
-  },
+  resultMeta: { flexDirection: "row", alignItems: "center", gap: 9 },
 });

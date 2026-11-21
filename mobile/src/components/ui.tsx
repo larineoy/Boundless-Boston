@@ -10,15 +10,16 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useState, type ComponentProps, type ReactNode } from "react";
+import { PlasmaPressable, PlasmaSurface, plasma } from "./plasma";
 
 export const colors = {
-  bg: "#111611",
-  panel: "#1b221a",
-  line: "#35402e",
+  bg: plasma.bg,
+  panel: "#17372c",
+  line: plasma.line,
   lime: "#c6f36a",
-  text: "#f0f1e8",
-  muted: "#a2ad99",
-  dim: "#778570",
+  text: plasma.text,
+  muted: plasma.muted,
+  dim: "#8ba99b",
 };
 export const mono = Platform.OS === "ios" ? "Menlo" : "monospace";
 export const serif = Platform.OS === "ios" ? "Georgia" : "serif";
@@ -43,7 +44,7 @@ export function Panel({
   children: ReactNode;
   style?: ViewStyle;
 }) {
-  return <View style={[s.panel, style]}>{children}</View>;
+  return <PlasmaSurface contentStyle={style}>{children}</PlasmaSurface>;
 }
 export function Button({
   title,
@@ -59,43 +60,47 @@ export function Button({
   icon?: ComponentProps<typeof Feather>["name"];
 }) {
   return (
-    <Pressable
+    <PlasmaPressable
       accessibilityRole="button"
       accessibilityState={{ disabled: !!disabled }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [
-        s.button,
-        secondary && s.secondary,
-        (disabled || pressed) && { opacity: 0.6 },
-      ]}
+      solid={!secondary}
+      radius={26}
+      style={{ minHeight: 54 }}
     >
-      <Text style={[s.buttonText, secondary && { color: colors.text }]}>
-        {title}
-      </Text>
-      <Icon name={icon} color={secondary ? colors.lime : colors.bg} size={18} />
-    </Pressable>
+      <View style={s.button}>
+        <Text style={[s.buttonText, secondary && { color: colors.text }]}>
+          {title}
+        </Text>
+        <Icon
+          name={icon}
+          color={secondary ? colors.lime : colors.bg}
+          size={18}
+        />
+      </View>
+    </PlasmaPressable>
   );
 }
 export function Header() {
   return (
     <View style={s.header}>
       <View style={s.row}>
-        <View style={s.logo}>
+        <PlasmaSurface radius={22} contentStyle={s.logo}>
           <Icon name="compass" size={18} />
-        </View>
+        </PlasmaSurface>
         <Text style={s.brand}>
           boundless<Text style={{ color: colors.lime }}>.</Text>
         </Text>
       </View>
-      <Pressable
+      <PlasmaPressable
         accessibilityRole="button"
         accessibilityLabel="Source information and neighborhood notes"
         onPress={() => router.push("/sources")}
         style={s.iconButton}
       >
         <Icon name="sliders" color={colors.muted} />
-      </Pressable>
+      </PlasmaPressable>
     </View>
   );
 }
@@ -132,24 +137,28 @@ export function ExternalLink({
   );
 }
 export const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  content: { paddingHorizontal: 22, paddingBottom: 32, gap: 18 },
+  screen: { flex: 1, backgroundColor: colors.bg, overflow: "hidden" },
+  content: {
+    paddingHorizontal: 20,
+    paddingBottom: 135,
+    gap: 22,
+    width: "100%",
+    maxWidth: 640,
+    alignSelf: "center",
+  },
   header: {
-    marginHorizontal: 22,
-    height: 68,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.line,
+    marginHorizontal: 20,
+    height: 72,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   row: { flexDirection: "row", alignItems: "center", gap: 9 },
   logo: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#687f41",
+    width: 38,
+    height: 38,
+    padding: 0,
+    gap: 0,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -168,8 +177,8 @@ export const s = StyleSheet.create({
   label: {
     color: colors.muted,
     fontFamily: mono,
-    fontSize: 9,
-    letterSpacing: 1.6,
+    fontSize: 10,
+    letterSpacing: 1.3,
     lineHeight: 16,
   },
   panel: {
@@ -189,10 +198,8 @@ export const s = StyleSheet.create({
   body: { color: colors.muted, fontSize: 14, lineHeight: 22 },
   caption: { color: colors.muted, fontSize: 11, lineHeight: 17 },
   button: {
-    backgroundColor: colors.lime,
-    borderRadius: 10,
-    paddingHorizontal: 18,
-    minHeight: 50,
+    width: "100%",
+    minHeight: 32,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",

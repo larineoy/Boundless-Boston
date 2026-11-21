@@ -58,7 +58,12 @@ export function SavedPlaces({
           <Plus size={18} /> Add from a video
         </button>
       </div>
-      <div className="collection-summary">
+      <Plasma
+        className="collection-summary panel"
+        lean={false}
+        fuse={false}
+        radius={28}
+      >
         <span>
           <b>{places.filter((p) => !p.visited).length}</b> WANT TO GO
         </span>
@@ -68,7 +73,7 @@ export function SavedPlaces({
         <p>
           Kept in this browser. Available after refresh, without an account.
         </p>
-      </div>
+      </Plasma>
       {error && (
         <p className="notice error" role="alert">
           {error}
@@ -85,7 +90,12 @@ export function SavedPlaces({
           </button>
         </p>
       )}
-      <div className="collection-toolbar">
+      <Plasma
+        className="collection-toolbar panel"
+        lean={false}
+        fuse={false}
+        radius={28}
+      >
         <label className="collection-search">
           <Search size={18} />
           <input
@@ -112,7 +122,7 @@ export function SavedPlaces({
             </button>
           ))}
         </div>
-      </div>
+      </Plasma>
       {places.length === 0 ? (
         <Plasma className="collection-empty panel" lean={false} fuse={false}>
           <Bookmark size={36} />
@@ -130,7 +140,12 @@ export function SavedPlaces({
           No saved places match this search. Try another filter or name.
         </p>
       ) : (
-        <div className="saved-grid">
+        <Plasma
+          className="saved-grid collection-surface panel"
+          lean={false}
+          fuse={false}
+          radius={28}
+        >
           {visible.map((p) => (
             <article className="saved-card panel" key={p.id}>
               <div className="saved-card-top">
@@ -250,7 +265,7 @@ export function SavedPlaces({
               )}
             </article>
           ))}
-        </div>
+        </Plasma>
       )}
     </section>
   );

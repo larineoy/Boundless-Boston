@@ -4,11 +4,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import AreaMap from "../../components/AreaMap";
 import { Button, Header, Icon, Label, Panel, s } from "../../components/ui";
 import { usePlanner } from "../../lib/planner";
+import { PlasmaBackground } from "../../components/plasma";
 
 export default function MapScreen() {
   const { location, locationLabel } = usePlanner();
   return (
     <SafeAreaView style={s.screen} edges={["top"]}>
+      <PlasmaBackground />
       <Header />
       <ScrollView contentContainerStyle={s.content}>
         <View style={{ gap: 10, paddingTop: 28 }}>

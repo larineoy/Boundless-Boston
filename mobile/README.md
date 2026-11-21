@@ -2,6 +2,17 @@
 
 Native iOS and Android companion to the existing Vite app. Built with Expo SDK 58, TypeScript, Expo Router, and React Native. It calls the existing FastAPI contract; there is no second backend or client-side fixture fallback.
 
+## Crux Garden material for mobile
+
+The mobile UI adapts [Crux Garden's Plasma UI](https://cruxgarden.github.io/plasma-ui/) into reusable native components in `src/components/plasma.tsx`. The original package renders browser DOM and a shared WebGL2 canvas; it is not imported into the native bundle. This adaptation uses Expo gradients, selective iOS/web blur, native sliders, native-driver spring animations, and selection haptics. It does not reproduce the browser renderer's refraction or fuse-on-contact shader.
+
+- Aurora backdrop, frosted cards, illuminated rims, glass fit-score badges, and a floating navigation dock.
+- `PlasmaPressable`, `PlasmaSegments`, `PlasmaSwitch`, and `PlasmaReveal` share the same material and touch behavior throughout the app.
+- Springs and pulses stop under Reduce Motion. iOS Reduce Transparency uses denser surfaces. Android uses tinted gradient materials instead of repeated backdrop blur passes. Decorative backgrounds are static, with no continuous GPU animation loop.
+- Planner presets, walking-distance slider, rain toggle, venue directions, and the native share sheet are ready for touch. Directions open an external map and do not claim to be a verified walking route.
+
+This is a native visual and interaction adaptation, not an upstream React Native release of Plasma UI.
+
 ## Start
 
 ```sh
