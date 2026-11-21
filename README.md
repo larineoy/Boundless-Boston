@@ -27,11 +27,16 @@ Open the Vite URL (normally `http://localhost:5173`). The frontend proxies `/api
 ## Current implementation
 
 - `backend/app/main.py`: FastAPI query, recommendations, neighborhood, and health endpoints; request validation; scoring; SQLite public response TTL cache; demo fixtures.
-- `src/`: React/Vite UI with responsive search, score breakdowns, map, weather override, source status, and attribution presentation.
-- `scoring/weights.yaml`: declared scoring weights.
+- `backend/app/tiktok.py`: TikTok Login Kit OAuth + Display API taste preferences (personalization only).
+- `src/`: React/Vite UI with responsive search, saved places (`localStorage`), TikTok connect, score breakdowns, weather override, source status, and attribution presentation.
+- `scoring/weights.yaml`: declared scoring weights (includes `taste`).
 - `docs/architecture/` and `docs/SOURCES.md`: architecture and data handling decisions.
 
-`APP_MODE=demo` is the default and uses clearly labeled synthetic fixtures. Live mode is opt-in with `APP_MODE=live`. Live Tier 1 paths are implemented for Google Places, MBTA stops/routes/schedules/predictions/alerts, National Weather Service hourly forecasts, and Boston CKAN 311 and active food-establishment license data. Boston CKAN resource IDs are discovered dynamically with `package_show`. Transit eligibility uses paired scheduled trips, with prediction confirmation where available, or an explicitly approximate walking fallback. Google Places requires `GOOGLE_MAPS_API_KEY`; without it, live mode returns no Google candidates instead of substituting fixtures. Set `BOSTON_311_PACKAGE` and `BOSTON_LICENSE_PACKAGE` to override the CKAN package slugs. Live adapter acceptance still needs to run against the configured credentials and current source quotas before production use. Tier 2 event, routing, Yelp, and LLM integrations remain out of scope for this Tier 1 pass.
+`APP_MODE=demo` is the default and uses clearly labeled synthetic fixtures. Live mode is opt-in with `APP_MODE=live`. Live Tier 1 paths are implemented for Google Places, MBTA stops/routes/schedules/predictions/alerts, National Weather Service hourly forecasts, and Boston CKAN 311 and active food-establishment license data. Boston CKAN resource IDs are discovered dynamically with `package_show`. Transit eligibility uses paired scheduled trips, with prediction confirmation where available, or an explicitly approximate walking fallback. Google Places requires `GOOGLE_MAPS_API_KEY`; without it, live mode returns no Google candidates instead of substituting fixtures. Set `BOSTON_311_PACKAGE` and `BOSTON_LICENSE_PACKAGE` to override the CKAN package slugs.
+
+### TikTok personalization (optional)
+
+Register an app at [TikTok for Developers](https://developers.tiktok.com/), enable Login Kit + TikTok API with scopes `user.info.basic` and `video.list`, and set the redirect URI to your frontend-origin callback (local default `http://localhost:5173/api/tiktok/callback` so the Vite proxy sets the session cookie on the UI host). Set `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, and `TIKTOK_REDIRECT_URI`. In demo mode, **Connect TikTok** uses fixture taste tags without credentials. TikTok is never used for venue discovery.
 
 ## Deploy
 

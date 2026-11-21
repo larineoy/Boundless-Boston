@@ -8,28 +8,30 @@ REACH = {"reach_value": 0.5}
 
 
 def test_weights_come_from_yaml_and_sum_to_one():
-    assert m.SCORING["weights"] == {"momentum": 0.20, "quality": 0.30, "reach": 0.20, "events": 0.15, "weather": 0.15}
+    assert m.SCORING["weights"] == {"momentum": 0.15, "quality": 0.25, "reach": 0.20, "events": 0.15, "weather": 0.15, "taste": 0.10}
+    assert abs(sum(m.SCORING["weights"].values()) - 1.0) < 1e-9
 
 
 def test_missing_components_drop_out_and_the_rest_rescale():
     live = {**VENUE, "momentum_meta": {"method": "unavailable", "label": None, "missing_reason": "no_velocity_data"}}
-    s = m.score_venue(live, 4.0, WEATHER, REACH)  # momentum and events both missing
+    s = m.score_venue(live, 4.0, WEATHER, REACH)  # momentum, events, and taste missing
     c = s["components"]
-    assert c["momentum"]["weight"] == 0 and c["events"]["weight"] == 0
-    assert c["quality"]["weight"] == pytest.approx(0.30 / 0.65) and c["reach"]["weight"] == pytest.approx(0.20 / 0.65)  # quality+reach+weather remain
+    assert c["momentum"]["weight"] == 0 and c["events"]["weight"] == 0 and c["taste"]["weight"] == 0
+    # Remaining: quality 0.25, reach 0.20, weather 0.15 → sum 0.60
+    assert c["quality"]["weight"] == pytest.approx(0.25 / 0.60) and c["reach"]["weight"] == pytest.approx(0.20 / 0.60)
     assert sum(x["weight"] for x in c.values()) == pytest.approx(1.0)
-    assert c["quality"]["base_weight"] == 0.30
+    assert c["quality"]["base_weight"] == 0.25
 
 
 def test_a_perfect_place_can_reach_one_even_with_missing_sources():
-    perfect = {"rating": 5.0, "review_count": 10**9, "indoor_outdoor": "indoor",
-               "momentum_meta": {"missing_reason": "no_velocity_data"}}
-    s = m.score_venue(perfect, 5.0, {"temperature_f": 30, "precipitation_chance_pct": 90}, {"reach_value": 1.0})
+    perfect = {"rating": 5.0, "review_count": 10**9, "indoor_outdoor": "indoor", "categories": ["cafe"],
+               "momentum_meta": {"missing_reason": "no_velocity_data"}, "nearby_events": 3}
+    s = m.score_venue(perfect, 5.0, {"temperature_f": 30, "precipitation_chance_pct": 90}, {"reach_value": 1.0}, ["cafe"])
     assert s["value"] == pytest.approx(1.0, abs=1e-3)
 
 
 def test_all_data_present_uses_base_weights():
-    s = m.score_venue({**VENUE, "nearby_events": 1}, 4.0, WEATHER, REACH)
+    s = m.score_venue({**VENUE, "nearby_events": 1, "categories": ["cafe"]}, 4.0, WEATHER, REACH, ["cafe"])
     assert {k: c["weight"] for k, c in s["components"].items()} == pytest.approx(m.SCORING["weights"])
 
 

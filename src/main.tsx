@@ -1,19 +1,21 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plasma, PlasmaProvider } from '@cruxgarden/plasma-ui';
-import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Bookmark, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
 import './style.css';
 
-type Venue={id:string;name:string;lat:number;lng:number;address:string|null;categories:string[];price_level:number|null;rating:number|null;review_count:number|null;walk_min:number;walk_estimate?:{label:string|null};indoor_outdoor:string;attributions:{source:string;text:string;url?:string;required_logo?:string;translate_no?:boolean}[]};
+type Venue={id:string;name:string;lat:number;lng:number;address:string|null;categories:string[];price_level:number|null;rating:number|null;review_count:number|null;walk_min:number;walk_estimate?:{label:string|null};indoor_outdoor:string;attributions:{source:string;text:string;url?:string;required_logo?:string;translate_no?:boolean}[];source_refs?:{source:string;external_id:string}[]};
 type Line={id:string;name:string;color:string;mode:string};
 type Leg={route?:string;line?:Line;from_stop?:string;to_stop?:string;depart_at?:string;arrive_at?:string;transfer?:{at:string;line:Line}};
 type Rec={venue:Venue;reachability:{method:string;label?:string;outbound?:Leg|null;return?:Leg|null;last_return?:(Leg&{last_of_night?:boolean})|null;total_min?:number|null;walk_to_stop_min?:number;walk_from_stop_min?:number};score:{value:number;components:Record<string,{value:number;weight:number;base_weight?:number;label?:string;missing_reason?:string|null;raw:Record<string,unknown>;sources:string[]}>};explanation:string;reach_explanation?:string;explain_facts?:Record<string,unknown>};
-type Result={recommendations:Rec[];sources_used:{source:string;status:string}[];generated_at:string;empty_message:string|null;query:{parsed_filters?:Record<string,unknown>};weather:{temperature_f:number|null;precipitation_chance_pct:number|null;forecast_for?:string;override?:string}};
+type Result={recommendations:Rec[];sources_used:{source:string;status:string}[];generated_at:string;empty_message:string|null;query:{parsed_filters?:Record<string,unknown>;preference_tags?:string[]};weather:{temperature_f:number|null;precipitation_chance_pct:number|null;forecast_for?:string;override?:string}};
 type Neighborhood={center:{lat:number;lng:number};radius_m:number;311:{top_categories:{category:string;count:number}[];period_start:string;period_end:string}|null;business_licenses:{name:string;issued_at:string;address?:string;distance_m?:number}[]|null;business_licenses_source?:string|null;city_contacts:{name:string;service:string;phone:string;url:string}[]|null};
+type SavedPlace={place_id:string;name:string;categories:string[];address:string|null;price_level:number|null;saved_at:string};
+
+const SAVED_KEY='boundless.savedPlaces.v1';
 const center:[number,number]=[42.355,-71.062];
 const clock=(iso?:string)=>iso?new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}):'';
 const rideMin=(leg:Leg)=>leg.depart_at&&leg.arrive_at?Math.max(1,Math.round((Date.parse(leg.arrive_at)-Date.parse(leg.depart_at))/60000)):null;
-// Games counted in the events score, shown on the card so the ranking signal is visible ("Bruins vs Capitals at TD Garden, 7:00 PM").
 function GameRow({r}:{r:Rec}){
  const games=(r.score.components.events?.raw?.games as string[]|undefined)??[];
  if(!games.length) return null;
@@ -26,21 +28,113 @@ function TransitRow({r}:{r:Rec}){
  const pill=(l:Line)=><span className="line-pill" style={{background:l.color,color:l.mode==='bus'?'#1a1a1a':'#fff'}}>{l.name}</span>;
  return <div className="transit-row">{pill(out.line)}{out.transfer&&<>{' → '}{pill(out.transfer.line)}<span className="transit-stops">change at {out.transfer.at}</span></>}<span className="transit-stops">{r.reachability.walk_to_stop_min!=null?`${r.reachability.walk_to_stop_min} min walk · `:''}{out.from_stop} → {out.to_stop}{ride?` · ${ride} min ride`:''}{r.reachability.walk_from_stop_min!=null?` · ${r.reachability.walk_from_stop_min} min walk`:''}</span>{last?.depart_at&&<span className="last-train"><Moon size={12}/> {last.last_of_night?'Last train back':'Latest train back'} {clock(last.depart_at)}</span>}</div>;
 }
-const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data',sports:'Red Sox & Bruins schedules',overpass:'OpenStreetMap (backup)'};
-// datetime-local wants local wall time (toISOString is UTC); +2h then floor keeps the default 1-2 h ahead, never seconds.
+const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data',sports:'Red Sox & Bruins schedules',overpass:'OpenStreetMap (backup)',tiktok:'TikTok taste'};
 const futureTime=()=>{const d=new Date(Date.now()+2*60*60*1000);d.setMinutes(0,0,0);const p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`};
+
+function loadSaved():SavedPlace[]{
+  try{const raw=localStorage.getItem(SAVED_KEY);if(!raw)return[];const parsed=JSON.parse(raw);return Array.isArray(parsed)?parsed.filter((x:SavedPlace)=>x&&typeof x.place_id==='string'):[]}catch{return[]}
+}
+function persistSaved(items:SavedPlace[]){localStorage.setItem(SAVED_KEY,JSON.stringify(items))}
+function placeIdFor(v:Venue){return v.source_refs?.find(r=>r.source==='google_places')?.external_id||v.id}
+function tagsFromSaved(items:SavedPlace[]):string[]{
+  const counts=new Map<string,number>();
+  for(const item of items)for(const c of item.categories||[])counts.set(c,(counts.get(c)||0)+1);
+  return [...counts.entries()].sort((a,b)=>b[1]-a[1]).map(([tag])=>tag).slice(0,12);
+}
+
 function App(){
  const [when,setWhen]=useState(futureTime()); const [budget,setBudget]=useState('$$'); const [walk,setWalk]=useState(30); const [travel,setTravel]=useState<'walk'|'walk_t'>('walk_t'); const [text,setText]=useState(''); const [weather,setWeather]=useState<'clear'|'rain'>('clear'); const [data,setData]=useState<Result|null>(null); const [health,setHealth]=useState<any[]>([]); const [loading,setLoading]=useState(false); const [expanded,setExpanded]=useState<string|null>(null); const [modal,setModal]=useState(false); const [loc,setLoc]=useState(center); const [error,setError]=useState(''); const [neighborhood,setNeighborhood]=useState<Neighborhood|null>(null); const [neighborhoodBusy,setNeighborhoodBusy]=useState(false); const [whys,setWhys]=useState<Record<string,string>>({});
- async function load(){setLoading(true);setError('');try{const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({time:new Date(when).toISOString(),budget,lat:loc[0],lng:loc[1],max_walk_min:walk,travel,free_text:text||undefined,weather_override:weather==='rain'?'rain':undefined})});if(res.status===429)throw new Error('Too many searches right now. Please wait a minute and try again.');if(!res.ok)throw new Error('Could not load recommendations.');const result:Result=await res.json();setData(result);setHealth(current=>{const next=[...current];for(const item of result.sources_used){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next})}catch(e){setError(e instanceof Error?e.message:'Could not reach the Navigator API. Start the backend on port 8000.')}finally{setLoading(false)}}
+ const [saved,setSaved]=useState<SavedPlace[]>(()=>loadSaved());
+ const [showSaved,setShowSaved]=useState(false);
+ const [tiktokTags,setTiktokTags]=useState<string[]>([]);
+ const [tiktokMode,setTiktokMode]=useState<'disabled'|'demo'|'live'>('disabled');
+ const [tiktokBusy,setTiktokBusy]=useState(false);
+
+ const savedTags=useMemo(()=>tagsFromSaved(saved),[saved]);
+ const preferenceTags=useMemo(()=>{
+   const seen=new Set<string>(); const out:string[]=[];
+   for(const tag of [...tiktokTags,...savedTags]){if(!seen.has(tag)){seen.add(tag);out.push(tag)}}
+   return out.slice(0,12);
+ },[tiktokTags,savedTags]);
+ const savedIds=useMemo(()=>new Set(saved.map(s=>s.place_id)),[saved]);
+
+ function updateSaved(next:SavedPlace[]){setSaved(next);persistSaved(next)}
+ function toggleSave(v:Venue){
+   const id=placeIdFor(v);
+   if(savedIds.has(id))updateSaved(saved.filter(s=>s.place_id!==id));
+   else updateSaved([{place_id:id,name:v.name,categories:v.categories||[],address:v.address,price_level:v.price_level,saved_at:new Date().toISOString()},...saved]);
+ }
+ function unsave(id:string){updateSaved(saved.filter(s=>s.place_id!==id))}
+
+ async function refreshTiktok(forceDemo=false){
+  setTiktokBusy(true);
+  try{
+    const url=forceDemo?'/api/tiktok/preferences?demo=1':'/api/tiktok/preferences';
+    const res=await fetch(url,{credentials:'include'});
+    if(!res.ok){setTiktokTags([]);setTiktokMode('disabled');return}
+    const body=await res.json();
+    setTiktokTags(Array.isArray(body.preference_tags)?body.preference_tags:[]);
+    setTiktokMode(body.mode==='live'||body.mode==='demo'?body.mode:'disabled');
+    setHealth(current=>{
+      const next=[...current];
+      for(const item of body.sources_used||[]){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}
+      return next;
+    });
+  }catch{setTiktokTags([]);setTiktokMode('disabled')}
+  finally{setTiktokBusy(false)}
+ }
+
+ async function connectTiktok(){
+  setTiktokBusy(true);
+  try{
+    const demo=await fetch('/api/tiktok/demo',{method:'POST',credentials:'include'});
+    if(demo.ok){
+      const body=await demo.json();
+      if(body.connected&&(body.preference_tags||[]).length){
+        setTiktokTags(body.preference_tags||[]);
+        setTiktokMode(body.mode==='live'?'live':'demo');
+        setTiktokBusy(false);
+        return;
+      }
+    }
+  }catch{}
+  setTiktokBusy(false);
+  window.location.href='/api/tiktok/login';
+ }
+
+ async function disconnectTiktok(){
+  await fetch('/api/tiktok/logout',{method:'POST',credentials:'include'}).catch(()=>{});
+  setTiktokTags([]);setTiktokMode('disabled');
+ }
+
+ async function load(){
+  setLoading(true);setError('');
+  try{
+    const res=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({time:new Date(when).toISOString(),budget,lat:loc[0],lng:loc[1],max_walk_min:walk,travel,free_text:text||undefined,weather_override:weather==='rain'?'rain':undefined,preference_tags:preferenceTags.length?preferenceTags:undefined})});
+    if(res.status===429)throw new Error('Too many searches right now. Please wait a minute and try again.');
+    if(!res.ok)throw new Error('Could not load recommendations.');
+    const result:Result=await res.json();
+    setData(result);
+    setHealth(current=>{const next=[...current];for(const item of result.sources_used){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next});
+  }catch(e){setError(e instanceof Error?e.message:'Could not reach the Navigator API. Start the backend on port 8000.')}
+  finally{setLoading(false)}
+ }
+
+ useEffect(()=>{
+  const params=new URLSearchParams(window.location.search);
+  const flag=params.get('tiktok');
+  if(flag){window.history.replaceState({},'',window.location.pathname);if(flag==='demo')refreshTiktok(true);else if(flag==='connected'||flag==='error')refreshTiktok()}
+  else refreshTiktok();
+ },[]);
  useEffect(()=>{const refresh=()=>fetch('/api/sources/health').then(r=>r.json()).then(x=>setHealth(x.sources||[])).catch(()=>{});load();refresh();const timer=window.setInterval(refresh,30000);return()=>window.clearInterval(timer)},[]);
+ useEffect(()=>{if(data)load()},[preferenceTags.join('|')]);
+
  async function showDetails(){setModal(true);setNeighborhoodBusy(true);try{const params=new URLSearchParams({lat:String(loc[0]),lng:String(loc[1]),radius_m:'1500'});const response=await fetch(`/api/neighborhood?${params}`);if(!response.ok)throw new Error('Neighborhood data is unavailable');const result:any=await response.json();setNeighborhood(result);setHealth(current=>{const next=[...current];for(const item of result.sources_used||[]){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}return next})}catch{setNeighborhood(null)}finally{setNeighborhoodBusy(false)}}
- // Fetched only when a card is opened, so searches never wait on Gemini; failures keep the template line.
- // Keyed by the facts, not the venue: a new search with different facts never shows an old line. '' marks pending or failed, so each card asks once.
  const whyKey=(r:Rec)=>JSON.stringify(r.explain_facts);
  async function toggleWhy(r:Rec){const id=r.venue.id,key=whyKey(r);setExpanded(expanded===id?null:id);if(expanded===id||!r.explain_facts||key in whys)return;setWhys(w=>({...w,[key]:''}));try{const res=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:key});const out=await res.json();if(res.ok&&out.explanation)setWhys(w=>({...w,[key]:out.explanation}))}catch{}}
  const recs=data?.recommendations||[];
  return <Plasma as="div" className="app-shell" group="app" padding={0} frost={0.12} elevation={0.1}>
-  <header className="topbar"><a className="brand" href="#"><span className="brand-icon"><Compass size={18}/></span><span>boundless<span className="brand-dot">.</span></span></a><div className="top-meta"><span className="live-pip"/>BOSTON, MA <span className="meta-divider">/</span> TONIGHT <Moon size={14}/></div><button className="icon-button" aria-label="Open source information" onClick={showDetails}><SlidersHorizontal size={17}/></button></header>
+  <header className="topbar"><a className="brand" href="#"><span className="brand-icon"><Compass size={18}/></span><span>boundless<span className="brand-dot">.</span></span></a><div className="top-meta"><span className="live-pip"/>BOSTON, MA <span className="meta-divider">/</span> TONIGHT <Moon size={14}/></div><div className="top-actions"><button className={`icon-button ${showSaved?'is-active':''}`} aria-label="Open saved places" onClick={()=>setShowSaved(true)}><Bookmark size={17}/></button><button className="icon-button" aria-label="Open source information" onClick={showDetails}><SlidersHorizontal size={17}/></button></div></header>
   <main>
    <section className="hero"><div className="eyebrow"><span className="eyebrow-line"/> YOUR NIGHT, WITHOUT THE GUESSWORK</div><h1>Boston after<br/><em>hours.</em></h1><p className="hero-copy">Good plans start with a place. Great ones get you home.</p><div className="hero-orbit"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit-dot"><Moon size={18}/></div><span className="orbit-label">42° 21′ N<br/>71° 03′ W</span></div></section>
    <section className="planner panel"><div className="panel-heading"><div><span className="section-kicker">01 — MAKE IT A NIGHT</span><h2>Find your somewhere.</h2></div><span className="step-count">01 <i>/ 03</i></span></div>
@@ -48,17 +142,23 @@ function App(){
     <label className="field"><span>WHEN</span><div className="input-wrap"><Moon size={15}/><input type="datetime-local" value={when} onChange={e=>setWhen(e.target.value)}/></div></label>
     <div className="field"><span>SPEND</span><div className="segmented">{['$','$$','$$$'].map(b=><button className={budget===b?'selected':''} key={b} onClick={()=>setBudget(b)}>{b}</button>)}</div></div>
     <div className="field field-wide"><span>HOW LONG TO GET THERE <b>{walk} MIN {travel==='walk_t'?'DOOR TO DOOR':'ON FOOT'}</b></span><div className="travel-row"><div className="segmented travel-toggle" role="group" aria-label="How you'll get there">{([['walk','Walk only'],['walk_t','Walk + T']] as const).map(([k,l])=><button key={k} className={travel===k?'selected':''} aria-pressed={travel===k} onClick={()=>setTravel(k)}>{k==='walk_t'&&<TrainFront size={13}/>}{l}</button>)}</div><input className="range" aria-label="Trip time in minutes" type="range" min="5" max="60" step="5" value={walk} onChange={e=>setWalk(+e.target.value)} style={{background:`linear-gradient(to right,var(--lime) 0 ${(walk-10)/50*100}%,#3a4137 ${(walk-10)/50*100}%)`}}/></div><div className="range-labels"><span>QUICK HOP</span><span>WORTH THE RIDE</span></div></div>
-    </div><div className="form-footer"><div className="location-pill"><MapPin size={15}/><span>Downtown Boston</span><button aria-label="Use current location" onClick={()=>navigator.geolocation?.getCurrentPosition(p=>setLoc([p.coords.latitude,p.coords.longitude]))}><Crosshair size={14}/></button></div><button className="submit-button" onClick={load} disabled={loading}>{loading?'Finding places…':'Find my night'} <ArrowUpRight size={17}/></button></div>
+    </div>
+    <div className="taste-row">
+     <div className="taste-meta"><span className="section-kicker">YOUR TASTE</span>{preferenceTags.length?<div className="taste-chips">{preferenceTags.map(t=><span key={t}>{t.replace('_',' ')}</span>)}</div>:<p className="taste-empty">Connect TikTok or save places to personalize fit scores.</p>}</div>
+     {tiktokMode==='disabled'?<button className="ghost-button" onClick={connectTiktok} disabled={tiktokBusy}>{tiktokBusy?'Connecting…':'Connect TikTok'}</button>:<button className="ghost-button" onClick={disconnectTiktok}>Disconnect TikTok · {tiktokMode}</button>}
+    </div>
+    <div className="form-footer"><div className="location-pill"><MapPin size={15}/><span>Downtown Boston</span><button aria-label="Use current location" onClick={()=>navigator.geolocation?.getCurrentPosition(p=>setLoc([p.coords.latitude,p.coords.longitude]))}><Crosshair size={14}/></button></div><button className="submit-button" onClick={load} disabled={loading}>{loading?'Finding places…':'Find my night'} <ArrowUpRight size={17}/></button></div>
    </section>
    <div className="section-head"><div><span className="section-kicker">02 — YOUR SHORTLIST</span><h2>{text?'A few good fits.':'The night is yours.'}</h2></div><button className="weather-toggle" onClick={()=>setWeather(weather==='clear'?'rain':'clear')}><span>{weather==='clear'?<Moon size={15}/>:<CloudRain size={15}/>}</span>{weather==='clear'?'Clear skies':'Rain check'}<span className="toggle-knob"/></button></div>
    {error&&<div className="notice error">{error}</div>}
    {data?.empty_message&&<div className="empty panel"><Moon size={22}/><p>{data.empty_message}</p></div>}
-   <div className="content-grid"><section className="results-list">{recs.map((r,i)=><article className={`venue-card panel ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}><div className="card-index">0{i+1}</div><div className="venue-content"><div className="venue-top"><div><div className="tags"><span>{r.venue.categories[0]?.replace('_',' ')||'LOCAL FAVORITE'}</span><span>{r.venue.price_level?'$'.repeat(r.venue.price_level):'PRICE UNKNOWN'}</span></div><h3>{r.venue.name}</h3><p className="venue-address">{r.venue.address}</p></div><button className="heart" aria-label={`Save ${r.venue.name}`}><Heart size={18}/></button></div><div className="venue-stats"><span><span className="star">★</span> {r.venue.rating?.toFixed(1)||'—'} <small>({r.venue.review_count?.toLocaleString()||'—'})</small></span><span><MapPin size={13}/> {r.reachability.outbound?.line&&r.reachability.total_min!=null?`${r.reachability.total_min} min by T`:`${r.venue.walk_min} min walk${r.venue.walk_estimate?.label==='approx.'?' (approx.)':''}`}</span><span><TrainFront size={14}/> {r.reachability.method==='predicted_round_trip'?'Live round trip':r.reachability.method==='scheduled_round_trip'?'Scheduled round trip':r.reachability.method==='walking_fallback'?'On foot':'Transit check'}</span><span className="open-status">OPEN</span></div><TransitRow r={r}/><GameRow r={r}/><div className="score-row"><div className="score"><strong>{Math.round(r.score.value*100)}</strong><small>FIT</small></div><div className="score-track"><div style={{width:`${Math.round(r.score.value*100)}%`}}/></div><button className="why-button" onClick={()=>toggleWhy(r)}>Why this? <ChevronDown size={14}/></button></div>{expanded===r.venue.id&&<div className="breakdown"><p>{whys[whyKey(r)]||r.explanation}{whys[whyKey(r)]&&<small> · AI summary from the facts below</small>}</p><p>{r.reach_explanation}</p>{Object.entries(r.score.components).map(([name,c])=><div className="component" key={name}><span>{name}<small>{c.missing_reason?` · not used (${c.missing_reason})`:c.label==='approx.'?' · approx.':c.label==='demo'?' · demo':''}</small></span><div><i style={{width:`${Math.round(c.value*100)}%`}}/></div><b>{Math.round(c.value*100)}<small> × {c.weight.toFixed(2)}</small></b></div>)}</div>}
-   <div className="attribution" translate="no">{(r.venue.attributions||[]).map((a,i)=><span key={`${a.source}-${i}`}>{a.url?<a href={a.url} target="_blank" rel="noreferrer">{a.text}</a>:a.text}{i<(r.venue.attributions.length-1)?' · ':''}</span>)}</div></div></article>)}</section>
-   <aside className="map-column"><button className="neighborhood panel" onClick={showDetails}><span className="neighborhood-icon"><Utensils size={17}/></span><span><small>GET TO KNOW THE BLOCK</small><b>Neighborhood notes</b></span><ChevronRight size={17}/></button></aside></div>
-   <section className="sources panel"><div className="sources-title"><span className="section-kicker">THE SIGNAL CHECK</span><h3>Where this comes from.</h3></div><div className="source-items">{['google_places','mbta','nws','boston_ckan','sports',...(health.some(h=>h.source==='overpass'&&h.status!=='disabled')?['overpass']:[])].map(s=>{const item=health.find(h=>h.source===s);return <div className="source-item" key={s}><span className={`source-dot ${item?.status==='live'?'is-live':''}`}/><span>{sourceNames[s]}</span><small>{item?.status||'demo'}</small></div>})}</div><p className="freshness">Source states and timestamps reflect the latest API response. Demo fixtures are labeled; live credentials stay server-side.</p><p className="attribution"><a href="https://www.weather.gov/" target="_blank" rel="noreferrer">Weather data by the National Weather Service</a> · <a href="https://www.mbta.com/developers/v3-api" target="_blank" rel="noreferrer">MBTA</a> · <a href="https://data.boston.gov/" target="_blank" rel="noreferrer">City of Boston Open Data</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></p></section>
+   <div className="content-grid"><section className="results-list">{recs.map((r,i)=>{const id=placeIdFor(r.venue);const isSaved=savedIds.has(id);return <article className={`venue-card panel ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}><div className="card-index">0{i+1}</div><div className="venue-content"><div className="venue-top"><div><div className="tags"><span>{r.venue.categories[0]?.replace('_',' ')||'LOCAL FAVORITE'}</span><span>{r.venue.price_level?'$'.repeat(r.venue.price_level):'PRICE UNKNOWN'}</span></div><h3>{r.venue.name}</h3><p className="venue-address">{r.venue.address}</p></div><button className={`heart ${isSaved?'is-saved':''}`} aria-label={isSaved?`Remove ${r.venue.name} from saved`:`Save ${r.venue.name}`} aria-pressed={isSaved} onClick={()=>toggleSave(r.venue)}><Heart size={18} fill={isSaved?'currentColor':'none'}/></button></div><div className="venue-stats"><span><span className="star">★</span> {r.venue.rating?.toFixed(1)||'—'} <small>({r.venue.review_count?.toLocaleString()||'—'})</small></span><span><MapPin size={13}/> {r.reachability.outbound?.line&&r.reachability.total_min!=null?`${r.reachability.total_min} min by T`:`${r.venue.walk_min} min walk${r.venue.walk_estimate?.label==='approx.'?' (approx.)':''}`}</span><span><TrainFront size={14}/> {r.reachability.method==='predicted_round_trip'?'Live round trip':r.reachability.method==='scheduled_round_trip'?'Scheduled round trip':r.reachability.method==='walking_fallback'?'On foot':'Transit check'}</span><span className="open-status">OPEN</span></div><TransitRow r={r}/><GameRow r={r}/><div className="score-row"><div className="score"><strong>{Math.round(r.score.value*100)}</strong><small>FIT</small></div><div className="score-track"><div style={{width:`${Math.round(r.score.value*100)}%`}}/></div><button className="why-button" onClick={()=>toggleWhy(r)}>Why this? <ChevronDown size={14}/></button></div>{expanded===r.venue.id&&<div className="breakdown"><p>{whys[whyKey(r)]||r.explanation}{whys[whyKey(r)]&&<small> · AI summary from the facts below</small>}</p><p>{r.reach_explanation}</p>{Object.entries(r.score.components).map(([name,c])=><div className="component" key={name}><span>{name}<small>{c.missing_reason?` · not used (${c.missing_reason})`:c.label==='approx.'?' · approx.':c.label==='demo'?' · demo':''}</small></span><div><i style={{width:`${Math.round(c.value*100)}%`}}/></div><b>{Math.round(c.value*100)}<small> × {c.weight.toFixed(2)}</small></b></div>)}</div>}
+   <div className="attribution" translate="no">{(r.venue.attributions||[]).map((a,i)=><span key={`${a.source}-${i}`}>{a.url?<a href={a.url} target="_blank" rel="noreferrer">{a.text}</a>:a.text}{i<(r.venue.attributions.length-1)?' · ':''}</span>)}</div></div></article>})}</section>
+   <aside className="map-column"><button className="neighborhood panel" onClick={showDetails}><span className="neighborhood-icon"><Utensils size={17}/></span><span><small>GET TO KNOW THE BLOCK</small><b>Neighborhood notes</b></span><ChevronRight size={17}/></button><button className="neighborhood panel saved-launch" onClick={()=>setShowSaved(true)}><span className="neighborhood-icon"><Bookmark size={17}/></span><span><small>YOUR LIST</small><b>{saved.length?`${saved.length} saved place${saved.length===1?'':'s'}`:'Saved places'}</b></span><ChevronRight size={17}/></button></aside></div>
+   <section className="sources panel"><div className="sources-title"><span className="section-kicker">THE SIGNAL CHECK</span><h3>Where this comes from.</h3></div><div className="source-items">{['google_places','mbta','nws','boston_ckan','sports','tiktok',...(health.some(h=>h.source==='overpass'&&h.status!=='disabled')?['overpass']:[])].map(s=>{const item=health.find(h=>h.source===s);return <div className="source-item" key={s}><span className={`source-dot ${item?.status==='live'||item?.status==='demo'?'is-live':''}`}/><span>{sourceNames[s]}</span><small>{item?.status||'demo'}</small></div>})}</div><p className="freshness">Source states and timestamps reflect the latest API response. Demo fixtures are labeled; live credentials stay server-side. TikTok is personalization only—not venue discovery.</p><p className="attribution"><a href="https://www.weather.gov/" target="_blank" rel="noreferrer">Weather data by the National Weather Service</a> · <a href="https://www.mbta.com/developers/v3-api" target="_blank" rel="noreferrer">MBTA</a> · <a href="https://data.boston.gov/" target="_blank" rel="noreferrer">City of Boston Open Data</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></p></section>
   </main><footer><span>BOUNDLESS BOSTON <i>© 2026</i></span><span>MADE FOR THE WAY HOME <ArrowDownRight size={14}/></span></footer>
   {modal&&<div className="modal-backdrop" onClick={()=>setModal(false)}><section className="modal panel" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setModal(false)}><X size={18}/></button><span className="section-kicker">SOURCE DETAILS</span><h2>Trust, in the details.</h2><p>Recommendations use transparent fit scores and show whether source data is live, cached, demo, or unavailable.</p>{health.map(h=><div className="health-row" key={h.source}><span className={`source-dot ${h.status==='live'?'is-live':''}`}/><b>{sourceNames[h.source]||h.source}</b><small>{h.status}</small></div>)}<hr/><span className="section-kicker">NEIGHBORHOOD SNAPSHOT</span>{neighborhoodBusy?<p>Loading Boston Open Data…</p>:neighborhood?.["311"]?<><p>311 requests · {neighborhood["311"].period_start} to {neighborhood["311"].period_end}</p>{neighborhood["311"].top_categories.map(item=><div className="health-row" key={item.category}><b>{item.category}</b><small>{item.count}</small></div>)}<p>Recent {neighborhood.business_licenses_source||'business'}</p>{(neighborhood.business_licenses||[]).slice(0,5).map((item,i)=><div className="health-row" key={`${item.name}-${i}`}><b>{item.name||"Business"}</b><small>{item.issued_at}</small></div>)}{(neighborhood.city_contacts||[]).map(c=><p key={c.name}><a href={c.url}>{c.name}</a> · {c.phone}</p>)}</>:<p>Boston Open Data is unavailable right now. No neighborhood figures are being substituted.</p>}</section></div>}
+  {showSaved&&<div className="modal-backdrop" onClick={()=>setShowSaved(false)}><section className="modal panel saved-modal" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setShowSaved(false)}><X size={18}/></button><span className="section-kicker">SAVED PLACES</span><h2>Your shortlist.</h2><p>Saved on this device only. Categories from these places feed taste scoring with TikTok tags.</p>{saved.length===0?<div className="empty panel"><Heart size={20}/><p>No saved places yet. Tap the heart on a recommendation to keep it here.</p></div>:saved.map(item=><div className="saved-row" key={item.place_id}><div><b>{item.name}</b><small>{(item.categories||[]).slice(0,2).join(' · ')||'place'}{item.address?` · ${item.address}`:''}</small></div><button className="ghost-button" onClick={()=>unsave(item.place_id)}>Remove</button></div>)}</section></div>}
  </Plasma>
 }
 

@@ -14,6 +14,7 @@ This catalog defines intended source use. Current credentials, quotas, retention
 | OSM Overpass (backup only; read from a bundled snapshot, not queried per request) | 2; venue fallback when Google Places is unavailable, with `opening_hours` | Usually none | At least 24h request cache, stale ≤7d; strict bounded usage | Credit OpenStreetMap contributors; display OSM attribution with map/data. | Synthetic OSM venue/opening-hours cases. |
 | Routing provider | 2; walking minutes, Mapbox Directions or OpenRouteService | Required depending provider | 30m, stale ≤6h subject to terms | Provider-required route attribution. Never use public OSRM demo server. | Fixed route times and estimated fallback examples. |
 | Google Gemini API (Flash-class model) | 2; free text to structured filters and grounded one-sentence “why” | Required | No raw prompt cache by default | No user-facing attribution required unless terms change; disclose parsing only if product requires. | Parser fixtures; deterministic regex/template fallback. Requested model name must be verified as available before implementation. |
+| TikTok Login Kit + Display API | 2; opt-in personalization only (authorized user’s video titles/descriptions → taste tags) | Required for live OAuth; demo fixtures without keys | Tokens in a separate session store (never the public TTL cache); no raw video body cache | Credit TikTok Display API when taste tags are used; user must authorize scopes `user.info.basic` and `video.list`. Not a venue discovery source. | Demo tags (`noodles`, `cafe`, `bar`) labeled `demo`. |
 | US Census ACS 5-year | 3; neighborhood demographic context | None/key per current API requirements | 30d | Cite Census/ACS and year; clearly contextual, not individual-level. | Small aggregate fixtures clearly labeled demo. |
 
 ## Compliance notes
@@ -27,7 +28,7 @@ Google Maps Platform ToS 3.2.3(e) and Service Specific Terms 14.2 bar using Plac
 | Snapchat / Snap Map | No suitable supported public discovery API for this product; privacy and reliability concerns. |
 | Reddit | Unstructured, weak venue-hours/reachability signal; API and content terms do not justify ingestion. |
 | Eventbrite public search | Public search scraping is not an approved integration path; Ticketmaster is selected for scoped event API. |
-| TikTok | No dependable, permitted venue/event data interface for this use. |
+| TikTok venue/event discovery / Research API | No dependable permitted venue discovery interface; Research API is academic-only. Login Kit + Display API may be used only for opt-in personalization of the connected user’s own content (see Tier 2 row above). |
 | Instagram | Access and content reuse restrictions; not a reliable structured venue availability source. |
 | Open-Meteo | Replaced by NWS: its free tier returned HTTP 429 to Render's shared outbound IPs on every request. A paid Open-Meteo key would also work. |
 | Google Trends | Search interest is not venue-level current availability or trip feasibility; not needed for MVP scoring. |
