@@ -6,8 +6,20 @@ const cards = (page: Page) => page.locator('article.venue-card');
 const walkCards = (page: Page) => cards(page).filter({ hasNot: page.locator('.transit-row') });
 const tCards = (page: Page) => cards(page).filter({ has: page.locator('.transit-row') });
 
-async function searchAt(page: Page, time: string) {
-  await page.locator('input[type=datetime-local]').fill(time);
+// The API only accepts the next 24 hours, so use the next Boston occurrence of a wall-clock time (at least 15 s away, so it is never past or more than 24 h out),
+// never a fixed date. The browser timezone is pinned to America/New_York in playwright.config.ts.
+function nextBoston(hhmm: string): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const wall = (d: Date) => { const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value])); return { day: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` }; };
+  const now = Date.now();
+  const soon = wall(new Date(now + 15_000));
+  const today = wall(new Date(now));
+  if (`${today.day}T${hhmm}` > `${soon.day}T${soon.time}`) return `${today.day}T${hhmm}`;
+  return `${wall(new Date(now + 24 * 3600_000)).day}T${hhmm}`;
+}
+
+async function searchAt(page: Page, hhmm: string) {
+  await page.locator('input[type=datetime-local]').fill(nextBoston(hhmm));
   await page.getByRole('button', { name: /Find my night/ }).click();
 }
 
@@ -62,7 +74,7 @@ test('neighborhood notes open with 311 data', async ({ page }) => {
 });
 
 test('Walk + T adds places by train with the line and the last train home', async ({ page }) => {
-  await searchAt(page, '2026-11-21T20:00');
+  await searchAt(page, '20:00');
   await expect(tCards(page)).toHaveCount(3);
   const harvard = cards(page).filter({ has: page.getByRole('heading', { name: "Pinocchio's Pizza & Subs" }) });
   await expect(harvard.locator('.line-pill')).toHaveText('Red Line');
@@ -72,13 +84,13 @@ test('Walk + T adds places by train with the line and the last train home', asyn
 
 test('Walk only hides the T places', async ({ page }) => {
   await page.getByRole('button', { name: 'Walk only' }).click();
-  await searchAt(page, '2026-11-21T20:00');
+  await searchAt(page, '20:00');
   await expect(page.getByRole('button', { name: 'Walk only' })).toHaveAttribute('aria-pressed', 'true');
   await expect(tCards(page)).toHaveCount(0);
   await expect(cards(page)).toHaveCount(5);
 });
 
 test('after the last train, far places drop out', async ({ page }) => {
-  await searchAt(page, '2026-11-21T23:50');
+  await searchAt(page, '23:50');
   await expect(tCards(page)).toHaveCount(0);
 });
