@@ -26,6 +26,7 @@ You give it a place, a time, a budget and how long you'll travel (walking, or wa
       ├─ Weather ........ National Weather Service (api.weather.gov)
       ├─ Events ......... Red Sox (MLB) + Bruins (NHL) home games  ·  Ticketmaster (pending approval)
       ├─ Language ....... Gemini: typed request → filters; "Why this?" one-liner
+      ├─ Taste .......... TikTok Login Kit (opt-in) + saved places → preference_tags (not venue discovery)
       └─ Neighborhood ... Boston Open Data (311 requests, business licenses)
 ```
 
@@ -44,7 +45,7 @@ You give it a place, a time, a budget and how long you'll travel (walking, or wa
 2. **Find**: up to 20 nearby places from Google Places. If Google returns nothing (no key, quota, outage), the bundled OpenStreetMap snapshot is used instead, and the two are never mixed.
 3. **Hard filters** (pass or drop): open at the chosen time (unknown hours = dropped), price ≤ budget (OSM backup: price unknown is allowed), matches the type if one was asked for.
 4. **Reach** (pass or drop): see "How ranking works" below.
-5. **Score**: five parts, weighted (below).
+5. **Score**: six parts, weighted (below), including optional taste when preference tags are present.
 6. **Show**: the top 8 by score (ties go to the shorter walk), each with its full breakdown and data sources.
 
 ## How ranking works
@@ -69,27 +70,28 @@ You give it a place, a time, a budget and how long you'll travel (walking, or wa
 
 ### Step 2: the score (0 to 1)
 
-Each eligible place gets five sub-scores between 0 and 1. The final score is their weighted average, with base weights from `scoring/weights.yaml`:
+Each eligible place gets six sub-scores between 0 and 1. The final score is their weighted average, with base weights from `scoring/weights.yaml`:
 
 | Part | Weight | What it measures | How |
 |---|---:|---|---|
-| **Momentum** | 20% | Is it getting popular? | Review growth over 30 days (max +10 → 1.0). *Not available in live mode, because Google's terms forbid storing review snapshots.* |
-| **Quality** | 30% | Is it good? | Rating adjusted for review count, so a 5.0 from 3 reviews doesn't beat a 4.6 from 5,000: `(n/(n+50))·rating + (50/(n+50))·median`, ÷ 5 |
+| **Momentum** | 15% | Is it getting popular? | Review growth over 30 days (max +10 → 1.0). *Not available in live mode, because Google's terms forbid storing review snapshots.* |
+| **Quality** | 25% | Is it good? | Rating adjusted for review count, so a 5.0 from 3 reviews doesn't beat a 4.6 from 5,000: `(n/(n+50))·rating + (50/(n+50))·median`, ÷ 5 |
 | **Reach** | 20% | How sure is the trip? | 1.0 = live MBTA prediction confirms the ride there · 0.5 = scheduled T trip or walking |
 | **Events** | 15% | Is something happening nearby? | Red Sox/Bruins home games within ½ mile, from 3 h before to 3 h after (3+ games → 1.0) |
 | **Weather** | 15% | Does the place suit the weather? | Rain ≥ 50% or below 40°F: indoor 1.0, outdoor 0.0. Otherwise everything 0.5 |
+| **Taste** | 10% | Does it match your vibe? | Jaccard overlap of venue categories with `preference_tags` from TikTok and/or saved places. Missing tags drop out. |
 
 **Missing data doesn't count against a place.** If a part has no data, its weight is set to 0 and the remaining weights are scaled up to total 100%:
 
 ```text
-  base weights        momentum 20 │ quality 30   │ reach 20 │ events 15    │ weather 15
-  live (Google)       momentum  – │ quality 37.5 │ reach 25 │ events 18.75 │ weather 18.75   momentum missing
-  OSM backup          momentum  – │ quality  –   │ reach 40 │ events 30    │ weather 30      no ratings either
+  base weights        momentum 15 │ quality 25   │ reach 20 │ events 15 │ weather 15 │ taste 10
+  live (no taste)     momentum  – │ quality ~33 │ reach ~27 │ events 20 │ weather 20 │ taste –   momentum+taste missing
+  OSM backup          momentum  – │ quality  –   │ reach ~40 │ events 30 │ weather 30 │ taste –   no ratings either
 ```
 
 ### Why these metrics (and how sure we are)
 
-The five parts come from the original design (`docs/architecture/02-data-contracts-and-scoring.md`), which used 30/30/20/10/10. On 2026-11-21 the weights were changed to 20/30/20/15/15 so games and rain visibly matter. They are **judgment calls, not tuned on data**: there has been no user testing or A/B comparison yet.
+The core parts come from the original design (`docs/architecture/02-data-contracts-and-scoring.md`), which used 30/30/20/10/10. On 2026-11-21 the weights were changed to 20/30/20/15/15 so games and rain visibly matter, then taste 10% was added (15/25/20/15/15/10). They are **judgment calls, not tuned on data**: there has been no user testing or A/B comparison yet.
 
 | Part | Why it's there |
 |---|---|
@@ -98,8 +100,9 @@ The five parts come from the original design (`docs/architecture/02-data-contrac
 | Reach | The core promise: you can get there **and back**. A trip confirmed by a live MBTA prediction counts as more certain than a schedule. |
 | Events | Nightlife energy (a game letting out nearby). A small nudge, not a decider. |
 | Weather | Comfort: indoor places get a lift when it's raining or cold. |
+| Taste | Personalization from optional TikTok connect and saved places; never invents venue discovery from TikTok. |
 
-**Known effects of these choices:** in live mode quality still carries the most weight (37.5%), because momentum always drops out. Weather and events were raised from 10% to 15% (taken from momentum, which live mode can't compute anyway), so rain now visibly reorders results: in the demo data the outdoor park drops from #1 to #4. In the OSM backup most places tie (no ratings), and ties go to the shorter walk.
+**Known effects of these choices:** in live mode quality still carries the most weight when momentum/taste are missing. Weather and events stay visible so rain and games reorder results. In the OSM backup most places tie (no ratings), and ties go to the shorter walk.
 
 **To change them**, edit `scoring/weights.yaml` (the weights must sum to 1). Scores, breakdowns and the "Why this?" view follow automatically. If you retune, note the reason in your PR and update the tables here.
 
@@ -162,6 +165,7 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 | Gemini parser | 2 | ✅ Live: free text → filters, with a rule-based fallback |
 | Gemini "why this place" | 2 | ✅ On demand when "Why this?" opens (`POST /api/explain`); numbers are checked against the facts; separate breaker `gemini_explain` |
 | Ticketmaster | 2 | 🟡 Built on `b/ticketmaster`, waiting for API key approval |
+| TikTok Login Kit + Display API | 2 | 🟡 On `b/tiktok-taste-and-saves`: OAuth + taste tags + demo fixtures. Personalization only (not venue discovery). Needs Live/Sandbox credentials, HTTPS redirect, and Render env to connect a real account. |
 | Sports schedules (events) | 2 | ✅ Red Sox (MLB Stats API) and Bruins (NHL) home games at Fenway and TD Garden, no key. Games from 3 h before to 3 h after the search time count as events for places within 0.5 mi. Celtics are not included: NBA's feed blocks automated access. MLB data is © MLB Advanced Media and its notice allows individual, non-commercial use, so review it before any commercial launch. |
 | OpenRouteService (real walk times) | 2 | 🟡 Wired, but **only for non-Google venues** (none until Overpass): Google Maps ToS 3.2.3(a)/(c) bar sending Places coordinates to it. Google venues show the straight-line estimate "(approx.)". Google's own Routes API is the compliant option, but it needs billing (the demo key gets 403). |
 | OpenStreetMap (backup) | 2 | ✅ Used only when Google Places returns nothing (no key, quota, outage); never mixed with Google. Reads a bundled snapshot (`backend/data/osm_venues.json`, refreshed with `scripts/refresh_osm_snapshot.py`) because live Overpass takes 30–60 s. No ratings or prices ("PRICE UNKNOWN"); common `opening_hours` forms are parsed, the rest count as unknown. |
@@ -189,13 +193,20 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 - ✅ T search: the 3 nearest stations plus the 2 nearest bus stops, subway first, at most 6 routes per place; line names and colors, plus the last train home on cards.
 - ✅ Parts with no data get weight 0 and the rest are rescaled (see "How ranking works").
 - ✅ Weights and thresholds load from `scoring/weights.yaml`; quality uses the true median.
+- ✅ Taste component (0.10): Jaccard overlap of venue categories with `preference_tags` from TikTok and/or saved-place categories; missing tags drop out and rescale.
 - ✅ One transfer between subway lines (at Park Street, Downtown Crossing, State, Government Center, Haymarket or North Station) when no single line works, e.g. "Orange Line → Red Line, change at Downtown Crossing". It allows 3 minutes to change, and the trip home is also two legs.
 - ✅ MBTA alerts only block a route when they are active at the trip time (a scheduled weekend suspension no longer blocks tonight's trains).
 
+### Product / UX
+
+- ✅ Saved places: heart toggle persists in browser `localStorage`; Saved panel lists/unsaves; categories feed taste tags.
+- 🟡 TikTok Connect UI + taste chips: demo path works locally; real account connect needs deployed callback, Render TikTok env vars, and TikTok Sandbox/Live setup.
+
 ### Up next
 
-1. Ticketmaster: test live and open the PR once the key is approved (adds concerts and shows on top of the Red Sox/Bruins games).
-2. Refresh the OSM snapshot now and then: `.venv/bin/python -I scripts/refresh_osm_snapshot.py` (public Overpass servers are slow; the script tiles and retries, and keeps the old file on failure).
-3. Move Gemini to the paid tier before launch (Places facts on the free tier; see Google Maps terms above).
-4. ✅ Rate limits: `/api/query`, `/api/recommendations` and `/api/explain` allow 30/min per visitor and 120/min site-wide (429 + Retry-After).
-5. Before launch: Google billing, consider moving Render to Virginia, and the security and accessibility checks in doc 05.
+1. Finish TikTok real-account path: merge this branch, set Render `TIKTOK_*` + matching HTTPS redirect, verify Sandbox OAuth end-to-end.
+2. Ticketmaster: test live and open the PR once the key is approved (adds concerts and shows on top of the Red Sox/Bruins games).
+3. Refresh the OSM snapshot now and then: `.venv/bin/python -I scripts/refresh_osm_snapshot.py` (public Overpass servers are slow; the script tiles and retries, and keeps the old file on failure).
+4. Move Gemini to the paid tier before launch (Places facts on the free tier; see Google Maps terms above).
+5. ✅ Rate limits: `/api/query`, `/api/recommendations` and `/api/explain` allow 30/min per visitor and 120/min site-wide (429 + Retry-After).
+6. Before launch: Google billing, consider moving Render to Virginia, and the security and accessibility checks in doc 05.

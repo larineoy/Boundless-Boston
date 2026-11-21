@@ -27,6 +27,7 @@ Boundless Boston Navigator produces a short list of places that fit a requested 
        │ MBTA          │    │ Yelp         │    │ stretch only    │
        │ NWS weather   │    │ Overpass     │    └─────────────────┘
        │ Boston CKAN   │    │ routing/LLM  │
+       │               │    │ TikTok taste │
        └───────┬──────┘    └───────┬──────┘
                └──────────────────┬┘
                     ┌─────────────▼─────────────┐
@@ -72,6 +73,7 @@ Dependency direction is one-way: UI → BFF contracts → domain services → so
 | Overpass | Cache/fixture, else omit OSM candidates | No key normally; configuration/policy may disable | Omit | Never treat missing data as proof that a place is closed. |
 | Routing provider | Cache/fixture, else use documented conservative straight-line walk estimate only if UI marks it estimated; otherwise exclude unknown walk eligibility | Disabled | Same | Never present estimate as routed time. Tier 2. |
 | Gemini parser/explainer | Deterministic parser/template fallback | Disabled | Fallback | No unsupported claims; explanations derive only from response breakdown. |
+| TikTok Login Kit / Display API | Demo taste fixtures when configured for demo; otherwise omit taste | Disabled; taste missing and rescaled | Omit | Personalization only. Never used for venue discovery. Tokens stay in a separate session store. |
 | Census ACS | Cache or omit | Disabled | Omit | Tier 3 optional context only; never changes core eligibility. |
 
 Common wrapper states and cache freshness semantics are specified in `03-resilience-caching-and-security.md`. A stale record is not silently presented as live. A fixture record carries `mode=demo` and a visible demo badge.

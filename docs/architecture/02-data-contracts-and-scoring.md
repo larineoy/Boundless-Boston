@@ -5,7 +5,7 @@ All timestamps are RFC 3339 UTC. JSON numbers are finite; coordinates use WGS84 
 ## Unified domain types
 
 ```ts
- type SourceId = 'google_places'|'mbta'|'nws'|'boston_ckan'|'ticketmaster'|'yelp'|'overpass'|'routing'|'gemini'|'census_acs';
+ type SourceId = 'google_places'|'mbta'|'nws'|'boston_ckan'|'ticketmaster'|'yelp'|'overpass'|'routing'|'gemini'|'census_acs'|'tiktok';
  type SourceMode = 'live'|'cached'|'demo'|'disabled'|'open-circuit';
  type Attribution = {source: SourceId; text: string; url?: string; required_logo?: string; translate_no?: boolean};
  type SourceRef = {source: SourceId; external_id: string; url?: string};
@@ -23,7 +23,7 @@ All timestamps are RFC 3339 UTC. JSON numbers are finite; coordinates use WGS84 
 
 ## API contracts
 
-`POST /api/query` accepts `{free_text?:string, time:string, budget:'$'|'$$'|'$$$', lat:number, lng:number, max_walk_min:integer, weather_override?:'clear'|'rain'|'cold'}`. `time` must be within the next 24 hours; `max_walk_min` is 1–120. Free text max 300 chars. `GET /api/recommendations` accepts equivalent structured query params, including repeated/encoded free_text only if the implementation supports it; canonical encoding must be documented. Both return:
+`POST /api/query` accepts `{free_text?:string, time:string, budget:'$'|'$$'|'$$$', lat:number, lng:number, max_walk_min:integer, weather_override?:'clear'|'rain'|'cold', preference_tags?:string[]}`. `time` must be within the next 24 hours; `max_walk_min` is 1–120. Free text max 300 chars. `preference_tags` is an optional list of at most 12 lowercase category slugs (from TikTok taste derivation and/or client saved-place categories); tokens are sanitized server-side. `GET /api/recommendations` accepts equivalent structured query params, including repeated `preference_tags`. Both return:
 
 ```json
 {"query":{"time":"...","budget":"$$","lat":42.35,"lng":-71.06,"max_walk_min":15},"recommendations":[{"venue":{},"score":{"value":0.72,"components":{"momentum":{"value":0.6,"weight":0.3,"raw":{},"sources":[],"label":"approx."}},"explanation":"..."}}],"sources_used":[],"generated_at":"..."}
@@ -54,16 +54,19 @@ Before scoring: (1) requested-time opening status must be `open`; unknown hours 
 ```yaml
 version: 1
 scale: {min: 0.0, max: 1.0}
-weights: {momentum: 0.20, quality: 0.30, reach: 0.20, events: 0.15, weather: 0.15}
+weights: {momentum: 0.15, quality: 0.25, reach: 0.20, events: 0.15, weather: 0.15, taste: 0.10}
 quality: {prior_reviews_m: 50, prior_rating_c: candidate_median_rating, rating_max: 5.0}
 momentum: {window_days: 30, source_priority: [google_places], snapshot_fallback_label: 'approx.'}
 reach: {mbta_round_trip: 1.0, walking_fallback: 0.5, unreachable: 0.0}
 events: {radius_m: 804.672, horizon_hours: 3, saturation_count: 3}
 weather: {default: 0.5, precipitation_chance_threshold_pct: 50, cold_threshold_f: 40, indoor_adverse: 1.0, outdoor_adverse: 0.0, neutral_type: 0.5}
+taste: {max_tags: 12}
 ```
 
 At runtime `candidate_median_rating` is the median of non-null eligible candidate ratings, or 3.0 if none; clamp all normalized components to `[0,1]`. Momentum is review-count delta in the last 30 days normalized as `min(1, max(0, delta)/10)` only where the source contract permits retaining the dated inputs. Google Places content is not persisted by this implementation, so Google review snapshots are disabled; its momentum is 0 with reason `google_review_velocity_not_persisted_for_provider_compliance`. If a future provider explicitly exposes dated velocity, mark it `approx.` and return the timestamped raw inputs. If no permitted velocity exists, momentum is 0 with reason `no_velocity_data`; the component is labeled as missing rather than `approx.`. In demo mode, fixture velocity remains labeled `demo`.
 
 Bayesian quality: `R'=(v/(v+m))*R + (m/(v+m))*C`, `m=50`, `C=median eligible candidate rating`; `quality=R'/5`. If rating/review count unavailable, use component 0.5 with missing-data reason and no invented raw rating. Reach is 1.0 when a live prediction confirms the outbound trip and a same-route scheduled return exists before the last service window (the return is 3+ h out, beyond MBTA's prediction horizon, so it can only be schedule-confirmed); 0.5 when a same-route scheduled pair confirms a return before the last scheduled service window or the venue is reachable by walking fallback; else 0.0. The score's raw method identifies `predicted_round_trip`, `scheduled_round_trip`, or `walking_fallback`; scheduled and walking plans are not presented as live predictions. Events=`min(1,count/3)`. If event provider is unavailable, use 0 and label unknown source (never describe as zero events). Weather starts at 0.5; if precipitation chance ≥50% or temp <40°F, indoor=1, outdoor=0, mixed/unknown=0.5. Weather override changes the effective weather input and must be shown in raw inputs.
 
-Final `score = Σ weight_i × component_i`, with base weights from `scoring/weights.yaml` (.20 momentum, .30 quality, .20 reach, .15 events, .15 weather; changed from 30/30/20/10/10 on 2026-11-21). **Components with no data (a `missing_reason`) get weight 0 and the remaining weights are rescaled to sum to 1**, so a missing source never caps the score; each component reports `base_weight` and the effective `weight`. This supersedes the per-component "use 0 / 0.5 when missing" defaults above for ranking purposes; those values are still reported but carry no weight. Round only for display (2 decimals); preserve full precision in API. Every component has `{value,weight,raw,sources,method,label?,missing_reason?}`. Explanation text must cite only returned breakdown values.
+Taste is Jaccard overlap between venue `categories` and `preference_tags` (intersection/union), clamped to `[0,1]`. When `preference_tags` is empty, taste uses `missing_reason: no_preference_data` and drops out of the weighted sum. Sources for taste may include `tiktok` and/or `saved_places` (client-derived; saved places are not a server source adapter).
+
+Final `score = Σ weight_i × component_i`, with base weights from `scoring/weights.yaml` (.15 momentum, .25 quality, .20 reach, .15 events, .15 weather, .10 taste). **Components with no data (a `missing_reason`) get weight 0 and the remaining weights are rescaled to sum to 1**, so a missing source never caps the score; each component reports `base_weight` and the effective `weight`. This supersedes the per-component "use 0 / 0.5 when missing" defaults above for ranking purposes; those values are still reported but carry no weight. Round only for display (2 decimals); preserve full precision in API. Every component has `{value,weight,raw,sources,method,label?,missing_reason?}`. Explanation text must cite only returned breakdown values.

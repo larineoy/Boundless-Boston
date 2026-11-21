@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.tiktok import init_session_db, router as tiktok_router
+
 ROOT = Path(__file__).resolve().parents[2]
 SCORING = yaml.safe_load((ROOT / "scoring" / "weights.yaml").read_text())
 assert abs(sum(SCORING["weights"].values()) - 1.0) < 1e-9, "scoring/weights.yaml weights must sum to 1"
@@ -33,10 +35,18 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 with sqlite3.connect(DB_PATH) as _db:
     _db.execute("CREATE TABLE IF NOT EXISTS cache(source TEXT,key TEXT,payload TEXT,fetched REAL,PRIMARY KEY(source,key))")
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+    allow_credentials=True,
+)
+app.include_router(tiktok_router)
 
-SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "sports", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
+SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "sports", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain", "tiktok"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
 HEALTH: dict[str, dict[str, Any]] = {s: {"source": s, "status": "demo" if DEMO and s in SOURCES[:4] else "disabled", "checked_at": None, "last_success_at": None, "cache_age_s": None, "detail": "Fixture mode" if DEMO and s in SOURCES[:4] else "Not configured"} for s in SOURCES}
+HEALTH["tiktok"].update(status="demo" if DEMO else "disabled", detail="Login Kit personalization only" if DEMO else "TIKTOK_CLIENT_KEY is not configured")
 FAILURES: dict[str, int] = {s: 0 for s in SOURCES}
 OPEN_UNTIL: dict[str, float] = {}
 HALF_OPEN_PROBES: set[str] = set()
@@ -86,6 +96,7 @@ class QueryInput(BaseModel):
     max_walk_min: int = Field(ge=1, le=120)  # the trip-time limit: door to door, on foot or by T
     travel: Literal["walk", "walk_t"] = "walk_t"
     weather_override: Literal["clear", "rain", "cold"] | None = None
+    preference_tags: list[str] = Field(default_factory=list, max_length=12)
 
     @field_validator("lat")
     @classmethod
@@ -104,6 +115,17 @@ class QueryInput(BaseModel):
         now = datetime.now(timezone.utc)
         if not now <= v.astimezone(timezone.utc) <= now + timedelta(hours=24): raise ValueError("time must be within the next 24 hours")
         return v
+    @field_validator("preference_tags")
+    @classmethod
+    def clean_preference_tags(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in v[:12]:
+            tag = re.sub(r"[^a-z0-9_]+", "", str(raw).lower().replace("-", "_").replace(" ", "_"))[:40]
+            if tag and tag not in seen:
+                seen.add(tag)
+                out.append(tag)
+        return out
 
 FIXTURES = [
  {"id":"demo-tatte","name":"Tatte Bakery & Cafe","lat":42.3548,"lng":-71.0601,"address":"1 Boston Wharf Rd, Boston","categories":["cafe","bakery"],"price_level":2,"rating":4.4,"review_count":820,"open_hours":{"status_at_requested_time":"open"},"indoor_outdoor":"indoor","walk_min":8,"source_refs":[{"source":"google_places","external_id":"demo-tatte"}],"attributions":[{"source":"google_places","text":"Demo venue data · Google Places attribution required in live mode","translate_no":True}],"momentum_delta":7},
@@ -136,6 +158,7 @@ def source_use(source: str, status: str | None = None) -> dict[str, Any]:
         "sports": [{"source": source, "text": "Game schedules: MLB Stats API (© MLB Advanced Media) and NHL", "url": "https://statsapi.mlb.com/"}],
         "overpass": [{"source": source, "text": "© OpenStreetMap contributors (ODbL)", "url": "https://www.openstreetmap.org/copyright"}],
         "routing": [{"source": source, "text": "© openrouteservice.org by HeiGIT | Map data © OpenStreetMap contributors", "url": "https://openrouteservice.org/"}],
+        "tiktok": [{"source": source, "text": "TikTok Display API (user-authorized)", "url": "https://developers.tiktok.com/"}],
     }
     return {"source": source, "status": status or h["status"], "observed_at": h["last_success_at"], "cache_age_s": h["cache_age_s"], "attribution": attributions.get(source, [])}
 def envelope(data: dict[str, Any], used: list[str]) -> dict[str, Any]:
@@ -373,7 +396,20 @@ def matches_category(venue: dict[str, Any], wanted: str | None) -> bool:
         return any("park" in c or "garden" in c for c in categories)
     return wanted in categories
 
-def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: dict[str, Any]) -> dict[str,Any]:
+def taste_score(categories: list[str] | None, preference_tags: list[str] | None) -> dict[str, Any]:
+    """Overlap between venue categories and user preference tags (Jaccard). Missing tags drop the component."""
+    prefs = {t for t in (preference_tags or []) if t}
+    cats = {c for c in (categories or []) if c}
+    if not prefs:
+        return {"value": 0.0, "raw": {"preference_tags": [], "categories": sorted(cats), "intersection": []}, "sources": ["tiktok", "saved_places"], "missing_reason": "no_preference_data"}
+    if not cats:
+        return {"value": 0.0, "raw": {"preference_tags": sorted(prefs), "categories": [], "intersection": []}, "sources": ["tiktok", "saved_places"], "missing_reason": None}
+    inter = prefs & cats
+    union = prefs | cats
+    value = len(inter) / len(union) if union else 0.0
+    return {"value": min(1.0, max(0.0, value)), "raw": {"preference_tags": sorted(prefs), "categories": sorted(cats), "intersection": sorted(inter)}, "sources": ["tiktok", "saved_places"], "missing_reason": None}
+
+def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: dict[str, Any], preference_tags: list[str] | None = None) -> dict[str,Any]:
     cfg=SCORING
     delta=v.get("momentum_delta"); momentum=min(1,max(0,delta or 0)/10)
     momentum_meta=v.get("momentum_meta") or {"method":"demo_fixture","label":"demo"}
@@ -384,11 +420,13 @@ def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: 
     w=cfg["weather"]
     adverse=(weather.get("precipitation_chance_pct") or 0)>=w["precipitation_chance_threshold_pct"] or (weather.get("temperature_f") is not None and weather["temperature_f"]<w["cold_threshold_f"])
     mood=w["indoor_adverse"] if (adverse and v["indoor_outdoor"]=="indoor") else (w["outdoor_adverse"] if adverse and v["indoor_outdoor"]=="outdoor" else w["neutral_type"])
+    taste=taste_score(v.get("categories"), preference_tags)
     components={"momentum":{"value":momentum,"raw":{"review_delta_30d":delta,**momentum_meta},"sources":["google_places"],"label":momentum_meta.get("label"),"missing_reason":momentum_meta.get("missing_reason")},
                 "quality":{"value":quality,"raw":{"rating":rating,"review_count":reviews,"prior_reviews":m,"prior_rating":median},"sources":["google_places"],"missing_reason":"no rating" if rating is None else None},
                 "reach":{"value":reach_value,"raw":reach,"sources":["mbta"]},
                 "events":{"value":events,"raw":{"nearby_events":nearby,"games":v.get("nearby_games") or []},"sources":["sports"],"missing_reason":"event data unavailable" if nearby is None else None},
-                "weather":{"value":mood,"raw":weather,"sources":["nws"],"missing_reason":"weather unavailable" if weather.get("temperature_f") is None and weather.get("precipitation_chance_pct") is None else None}}
+                "weather":{"value":mood,"raw":weather,"sources":["nws"],"missing_reason":"weather unavailable" if weather.get("temperature_f") is None and weather.get("precipitation_chance_pct") is None else None},
+                "taste":taste}
     # Components without data drop out and the rest are rescaled, so missing sources never cap the score.
     available=sum(cfg["weights"][k] for k,c in components.items() if not c.get("missing_reason"))
     for k,c in components.items():
@@ -1242,13 +1280,14 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
         if reach: eligible.append((v,reach))
     ratings=sorted(v["rating"] for v,_ in eligible if v.get("rating") is not None)
     median=statistics.median(ratings) if ratings else 3.0
+    prefs=q.preference_tags or []
     candidates=[]
     for v,reach in eligible:
         v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") not in (None,"routed") else None}
         near=None if games is None else [g for g in games if haversine(v["lat"],v["lng"],*SPORTS_VENUES[g["venue"]])<=SCORING["events"]["radius_m"]]
         v["nearby_events"]=None if near is None else len(near)
         v["nearby_games"]=[f'{g["label"]} at {g["venue"]}, {g["start"].astimezone(ZoneInfo("America/New_York")).strftime("%-I:%M %p")}' for g in near or []]
-        scored=score_venue(v,median,weather,reach)
+        scored=score_venue(v,median,weather,reach,prefs)
         candidates.append({"venue":v,"score":scored,"reachability":reach,
                            "explanation":(f"Open at your requested time, within budget, and about {v['walk_min']} minutes on foot; walk time is an estimate where labeled." if reach["method"]=="walking_fallback"
                                          else f"Open at your requested time and within budget; about {reach.get('total_min')} minutes door to door by T: {transit_summary(reach) or reach['outbound']['route']}."),
@@ -1257,11 +1296,12 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     candidates=candidates[:8]
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
-    used=["google_places","mbta","nws","sports"]+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])
-    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
+    used=["google_places","mbta","nws","sports"]+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])+(["tiktok"] if prefs else [])
+    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override,"preference_tags":prefs},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
 
 @app.on_event("startup")
 async def discover_boston_resources() -> None:
+    init_session_db()
     # Resolve CKAN resource IDs from package metadata; never pin deployment-specific IDs.
     if not DEMO:
         await resolve_ckan_resources(force=True)
@@ -1308,8 +1348,8 @@ async def explain(f: ExplainInput) -> dict[str,Any]:
     why=await gemini_explanation(f.model_dump())
     return envelope({"id":f.id,"explanation":why,"source":"gemini" if why else "unavailable"},["gemini_explain"])
 @app.get("/api/recommendations")
-async def recommendations(time: datetime, budget: Literal["$","$$","$$$"], lat: float, lng: float, max_walk_min: int=Query(ge=1,le=120), free_text: str|None=None, weather_override: Literal["clear","rain","cold"]|None=None) -> dict[str,Any]:
-    return await make_query(QueryInput(time=time,budget=budget,lat=lat,lng=lng,max_walk_min=max_walk_min,free_text=free_text,weather_override=weather_override))
+async def recommendations(time: datetime, budget: Literal["$","$$","$$$"], lat: float, lng: float, max_walk_min: int=Query(ge=1,le=120), travel: Literal["walk","walk_t"]="walk_t", free_text: str|None=None, weather_override: Literal["clear","rain","cold"]|None=None, preference_tags: list[str]|None=Query(default=None)) -> dict[str,Any]:
+    return await make_query(QueryInput(time=time,budget=budget,lat=lat,lng=lng,max_walk_min=max_walk_min,travel=travel,free_text=free_text,weather_override=weather_override,preference_tags=preference_tags or []))
 @app.get("/api/neighborhood")
 async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=180),radius_m:int=Query(ge=50,le=5000)) -> dict[str,Any]:
     if not DEMO:
