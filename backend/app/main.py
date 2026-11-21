@@ -10,7 +10,7 @@ import sqlite3
 import statistics
 import time as clock
 import asyncio
-from collections import Counter
+from collections import Counter, deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -21,6 +21,7 @@ import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,7 @@ with sqlite3.connect(DB_PATH) as _db:
 app = FastAPI(title="Boundless Boston Navigator API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
-SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
+SOURCES = ["google_places", "mbta", "nws", "boston_ckan", "sports", "ticketmaster", "yelp", "overpass", "routing", "gemini", "census_acs", "gemini_explain"]  # gemini_explain: own breaker, so explain load cannot disable query parsing
 HEALTH: dict[str, dict[str, Any]] = {s: {"source": s, "status": "demo" if DEMO and s in SOURCES[:4] else "disabled", "checked_at": None, "last_success_at": None, "cache_age_s": None, "detail": "Fixture mode" if DEMO and s in SOURCES[:4] else "Not configured"} for s in SOURCES}
 FAILURES: dict[str, int] = {s: 0 for s in SOURCES}
 OPEN_UNTIL: dict[str, float] = {}
@@ -132,6 +133,7 @@ def source_use(source: str, status: str | None = None) -> dict[str, Any]:
         "mbta": [{"source": source, "text": "MBTA V3 API", "url": "https://api-v3.mbta.com/"}],
         "nws": [{"source": source, "text": "Weather data by the National Weather Service", "url": "https://www.weather.gov/"}],
         "boston_ckan": [{"source": source, "text": "City of Boston Open Data", "url": "https://data.boston.gov/"}],
+        "sports": [{"source": source, "text": "Game schedules: MLB Stats API (© MLB Advanced Media) and NHL", "url": "https://statsapi.mlb.com/"}],
         "overpass": [{"source": source, "text": "© OpenStreetMap contributors (ODbL)", "url": "https://www.openstreetmap.org/copyright"}],
         "routing": [{"source": source, "text": "© openrouteservice.org by HeiGIT | Map data © OpenStreetMap contributors", "url": "https://openrouteservice.org/"}],
     }
@@ -385,7 +387,7 @@ def score_venue(v: dict[str,Any], median: float, weather: dict[str,Any], reach: 
     components={"momentum":{"value":momentum,"raw":{"review_delta_30d":delta,**momentum_meta},"sources":["google_places"],"label":momentum_meta.get("label"),"missing_reason":momentum_meta.get("missing_reason")},
                 "quality":{"value":quality,"raw":{"rating":rating,"review_count":reviews,"prior_reviews":m,"prior_rating":median},"sources":["google_places"],"missing_reason":"no rating" if rating is None else None},
                 "reach":{"value":reach_value,"raw":reach,"sources":["mbta"]},
-                "events":{"value":events,"raw":{"nearby_events":nearby},"sources":["ticketmaster"],"missing_reason":"event data unavailable" if nearby is None else None},
+                "events":{"value":events,"raw":{"nearby_events":nearby,"games":v.get("nearby_games") or []},"sources":["sports"],"missing_reason":"event data unavailable" if nearby is None else None},
                 "weather":{"value":mood,"raw":weather,"sources":["nws"],"missing_reason":"weather unavailable" if weather.get("temperature_f") is None and weather.get("precipitation_chance_pct") is None else None}}
     # Components without data drop out and the rest are rescaled, so missing sources never cap the score.
     available=sum(cfg["weights"][k] for k,c in components.items() if not c.get("missing_reason"))
@@ -1039,6 +1041,64 @@ def nws_period_at(data: dict[str, Any] | None, target: datetime) -> dict[str, An
             return {"temperature_f": temp, "precipitation_chance_pct": chance, "forecast_for": period["startTime"], "source": "nws"}
     return None
 
+# Big home games are the events that fill nearby bars; both schedules are public and need no key.
+SPORTS_VENUES = {"Fenway Park": (42.3467, -71.0972), "TD Garden": (42.3662, -71.0621)}
+_SPORTS: dict[str, Any] = {}
+
+def _mlb_home_games(data: Any) -> list[dict[str, Any]] | None:
+    try:
+        games = []
+        for day in data.get("dates", []):
+            for g in day.get("games", []):
+                status = g.get("status") or {}
+                if status.get("codedGameState") in ("D", "C") or status.get("detailedState") in ("Postponed", "Cancelled"):
+                    continue  # rainouts stay in the schedule at their original time
+                venue = (g.get("venue") or {}).get("name")
+                if venue in SPORTS_VENUES and g.get("gameDate"):
+                    away = (((g.get("teams") or {}).get("away") or {}).get("team") or {}).get("name", "visitors")
+                    games.append({"start": datetime.fromisoformat(g["gameDate"].replace("Z", "+00:00")), "venue": venue, "label": f"Red Sox vs {away}"})
+        return games
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None  # unexpected shape counts as the feed being down, never a failed search
+
+def _nhl_home_games(data: Any) -> list[dict[str, Any]] | None:
+    try:
+        games = []
+        for g in data.get("games", []):
+            venue = (g.get("venue") or {}).get("default")
+            if venue in SPORTS_VENUES and g.get("startTimeUTC") and g.get("gameScheduleState", "OK") == "OK":
+                away = ((g.get("awayTeam") or {}).get("commonName") or {}).get("default", "visitors")
+                games.append({"start": datetime.fromisoformat(g["startTimeUTC"].replace("Z", "+00:00")), "venue": venue, "label": f"Bruins vs {away}"})
+        return games
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None
+
+async def boston_home_games() -> list[dict[str, Any]] | None:
+    """Red Sox (MLB) and Bruins (NHL) home games, refreshed every 6 h. A failed feed keeps its last good list and is
+    retried in 5 min; None only when neither team has ever loaded."""
+    if _SPORTS and clock.time() < _SPORTS["fresh_until"]:
+        return _SPORTS.get("games")  # absent after a failed first fetch (backoff with nothing to serve)
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    season = f"{today.year}{today.year + 1}" if today.month >= 7 else f"{today.year - 1}{today.year}"
+    mlb, nhl = await asyncio.gather(
+        request_json("sports", "https://statsapi.mlb.com/api/v1/schedule",
+                     {"sportId": 1, "teamId": 111, "startDate": (today - timedelta(days=1)).isoformat(), "endDate": (today + timedelta(days=2)).isoformat()}),
+        request_json("sports", f"https://api-web.nhle.com/v1/club-schedule-season/BOS/{season}"))
+    by_team = _SPORTS.setdefault("by_team", {})
+    fresh = {"mlb": None if mlb is None else _mlb_home_games(mlb), "nhl": None if nhl is None else _nhl_home_games(nhl)}
+    for team, games in fresh.items():
+        if games is not None:
+            by_team[team] = games
+    _SPORTS["fresh_until"] = clock.time() + (6 * 3600 if all(g is not None for g in fresh.values()) else 300)
+    _SPORTS["games"] = [g for games in by_team.values() for g in games] if by_team else None
+    return _SPORTS["games"]
+
+def games_around(games: list[dict[str, Any]] | None, when: datetime) -> list[dict[str, Any]] | None:
+    """Games that started up to 3 h before, or start within 3 h after, the requested time (crowds arriving or leaving)."""
+    if games is None:
+        return None
+    return [g for g in games if timedelta(hours=-3) <= g["start"] - when <= timedelta(hours=3)]
+
 async def forecast_for_query(q: QueryInput) -> dict[str, Any]:
     if DEMO:
         result = {"temperature_f": 55.0, "precipitation_chance_pct": 0, "source": "demo_fixture"}
@@ -1074,7 +1134,8 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     for venue,minutes in zip(to_route,routed or []):
         if minutes is not None:
             venue["walk_min"],venue["walk_method"]=minutes,"routed"
-    weather=await forecast_for_query(q)
+    weather,games=await asyncio.gather(forecast_for_query(q),boston_home_games())
+    games=None if DEMO else games_around(games,q.time)  # demo has no event fixtures; events stay "not used"
     max_price={"$":1,"$$":2,"$$$":3}[budget]
     pre_candidates=[]
     for venue in places:
@@ -1106,6 +1167,9 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     candidates=[]
     for v,reach in eligible:
         v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") not in (None,"routed") else None}
+        near=None if games is None else [g for g in games if haversine(v["lat"],v["lng"],*SPORTS_VENUES[g["venue"]])<=SCORING["events"]["radius_m"]]
+        v["nearby_events"]=None if near is None else len(near)
+        v["nearby_games"]=[f'{g["label"]} at {g["venue"]}, {g["start"].astimezone(ZoneInfo("America/New_York")).strftime("%-I:%M %p")}' for g in near or []]
         scored=score_venue(v,median,weather,reach)
         candidates.append({"venue":v,"score":scored,"reachability":reach,
                            "explanation":(f"Open at your requested time, within budget, and about {v['walk_min']} minutes on foot; walk time is an estimate where labeled." if reach["method"]=="walking_fallback"
@@ -1115,7 +1179,7 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     candidates=candidates[:8]
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
-    used=["google_places","mbta","nws"]+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])
+    used=["google_places","mbta","nws"]+([] if DEMO else ["sports"])+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])
     return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
 
 @app.on_event("startup")
@@ -1126,6 +1190,39 @@ async def discover_boston_resources() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str,str]: return {"status":"ok"}
+# Per-visitor and site-wide sliding windows (requests per 60 s) on the endpoints that spend Google/Gemini/ORS/MBTA quota.
+RATE_LIMITS = {"/api/query": (30, 120), "/api/recommendations": (30, 120), "/api/explain": (30, 120)}
+_HITS: dict[tuple[str, str], deque[float]] = {}
+
+def client_key(request: Request) -> str:
+    # shortcut: trusts the left-most X-Forwarded-For (set by Render's proxies), which a client can spoof to dodge the
+    # per-visitor limit; the site-wide cap still bounds total spend. Upgrade if Render exposes a verified client-IP header.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    limits = RATE_LIMITS.get(request.url.path)
+    if limits and request.method != "OPTIONS":  # CORS preflights don't spend quota
+        now, path = clock.time(), request.url.path
+        windows = [((client_key(request), path), limits[0]), (("*", path), limits[1])]
+        for key, cap in windows:
+            hits = _HITS.get(key) or deque()  # no entry until accepted, so rejected floods can't grow memory
+            while hits and hits[0] <= now - 60:
+                hits.popleft()
+            if len(hits) >= cap:
+                retry = max(1, int(hits[0] + 60 - now) + 1)
+                who = "this visitor" if key[0] != "*" else "the site"
+                return JSONResponse(status_code=429, headers={"Retry-After": str(retry)},
+                                    content={"error": {"code": "rate_limited", "message": f"Too many requests from {who}; try again in {retry} s."},
+                                             "sources_used": [], "generated_at": now_iso()})
+        for key, _ in windows:
+            _HITS.setdefault(key, deque()).append(now)
+        if len(_HITS) > 5000:  # forget idle visitors so memory stays bounded
+            for key in [k for k, v in _HITS.items() if not v or v[-1] <= now - 60]:
+                del _HITS[key]
+    return await call_next(request)
+
 @app.post("/api/query")
 async def query(q: QueryInput) -> dict[str,Any]: return await make_query(q)
 @app.post("/api/explain")
