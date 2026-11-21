@@ -40,6 +40,44 @@ Register an app at [TikTok for Developers](https://developers.tiktok.com/), enab
 
 ## Deploy
 
+### Docker (web UI and API)
+
+Requires Docker with Linux container support (Docker Desktop on Windows/macOS,
+or Docker Engine on Linux). No host Python or Node.js installation is needed.
+From the repository root:
+
+```sh
+docker build -t boundless-boston .
+docker run --rm --name boundless-boston -p 8000:8000 -v boundless-data:/app/.cache boundless-boston
+```
+
+Open `http://localhost:8000`; API docs are at `http://localhost:8000/docs`.
+The image defaults to demo mode, serves the compiled UI and API from one origin,
+runs as UID/GID 10001, and checks `/api/health` automatically. The named volume
+retains the response cache and TikTok sessions across container restarts. Bind
+mounts must be writable by UID 10001.
+
+For live providers, copy `.env.example` to `.env`, configure `APP_MODE=live`
+and provider keys, and add `--env-file .env` before the image name in the run
+command. Set `CORS_ORIGINS` to your web origin (locally `http://localhost:8000`)
+and `TIKTOK_REDIRECT_URI` to that origin plus `/api/tiktok/callback`. Register
+the same callback with TikTok; set `TIKTOK_COOKIE_SECURE=true` when serving over
+HTTPS. Use a reverse proxy or hosting platform for TLS. Secrets and local
+databases are excluded from the build context.
+
+`PORT` defaults to 8000. To change it, set both the environment variable and
+mapping, for example `-e PORT=8080 -p 8080:8080`, and update the origin/callback
+settings to match. Only Docker and network access for building and live
+providers are required; native Expo mobile builds remain separate.
+
+`dependencies.txt` contains Python runtime dependencies;
+`backend/requirements.txt` includes it plus pytest for development. Frontend
+dependencies use a frozen `pnpm-lock.yaml`. Base images support AMD64 and ARM64;
+publish both with a configured Buildx builder using
+`docker buildx build --platform linux/amd64,linux/arm64 -t YOUR_REGISTRY/boundless-boston --push .`.
+
+### Hosted services
+
 - **API:** Render, from `render.yaml` (free web service, `APP_MODE=live`). Set `GOOGLE_MAPS_API_KEY` and `MBTA_API_KEY` in the Render dashboard. The free plan sleeps when idle, so the first request after a pause can take about a minute.
 - **Frontend:** Render static site `boundless-boston-web` (also in `render.yaml`). A rewrite sends `/api/*` to `https://boundless-boston-api-5ze8.onrender.com`, so no CORS setup is needed.
 

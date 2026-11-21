@@ -1,0 +1,2 @@
+import base from './playwright.config';
+export default {...base,use:{...base.use,baseURL:'http://localhost:5187'},webServer:[{command:'python -m uvicorn app.main:app --app-dir backend --port 8017',url:'http://localhost:8017/api/health',env:{APP_MODE:'demo',CACHE_DB:'test-results/atlas-cache.sqlite3'}},{command:'pnpm exec vite build --config vite.atlas-test.config.ts && pnpm exec vite preview --config vite.atlas-test.config.ts --port 5187 --strictPort',url:'http://localhost:5187',timeout:120000}]};
