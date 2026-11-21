@@ -87,6 +87,7 @@ def source_use(source: str, status: str | None = None) -> dict[str, Any]:
         "mbta": [{"source": source, "text": "MBTA V3 API", "url": "https://api-v3.mbta.com/"}],
         "nws": [{"source": source, "text": "Weather data by the National Weather Service", "url": "https://www.weather.gov/"}],
         "boston_ckan": [{"source": source, "text": "City of Boston Open Data", "url": "https://data.boston.gov/"}],
+        "routing": [{"source": source, "text": "© openrouteservice.org by HeiGIT | Map data © OpenStreetMap contributors", "url": "https://openrouteservice.org/"}],
     }
     return {"source": source, "status": status or h["status"], "observed_at": h["last_success_at"], "cache_age_s": h["cache_age_s"], "attribution": attributions.get(source, [])}
 def envelope(data: dict[str, Any], used: list[str]) -> dict[str, Any]:
@@ -121,7 +122,7 @@ async def request_json(source: str, url: str, params: dict[str, Any] | None = No
         return None
     params = params or {}
     cache_key = normalized_params({"url": url, "params": params, "body": json_body, "method": method})
-    cache_allowed = source not in ("google_places", "gemini", "gemini_explain")  # Places terms; never cache anything keyed on user free text
+    cache_allowed = source not in ("google_places", "gemini", "gemini_explain", "routing")  # Places terms; no user free text; ORS echoes origin + Places coordinates
     if clock.time() < OPEN_UNTIL.get(source, 0):
         cached_when_open = cache_get(source, cache_key) if cache_allowed else None
         HEALTH[source].update(status="open-circuit", detail="Circuit open for 60 seconds")
@@ -377,6 +378,31 @@ def opening_at(hours: dict[str, Any] | None, requested: datetime, timezone_id: s
         return "closed"
     parsed_any = any(p.get("open", {}).get("date") or "day" in p.get("open", {}) for p in periods)
     return "closed" if parsed_any else "unknown"
+
+ORS_MATRIX_URL = "https://api.openrouteservice.org/v2/matrix/foot-walking"
+
+async def routed_walk_minutes(lat: float, lng: float, venues: list[dict[str, Any]]) -> list[int | None] | None:
+    """Street-routed walking minutes from the origin to each venue (None where ORS finds no route); None if unavailable."""
+    key = os.getenv("ORS_API_KEY")
+    if DEMO:
+        HEALTH["routing"].update(status="demo", detail="Fixture walk times")
+        return None
+    if not venues:
+        return None
+    if not key:
+        HEALTH["routing"].update(status="disabled", detail="ORS_API_KEY is not configured")
+        return None
+    # ORS takes [lng, lat]; one matrix call covers every candidate. Not cached: the response echoes the coordinates.
+    locations = [[round(lng, 4), round(lat, 4)]] + [[v["lng"], v["lat"]] for v in venues]
+    body = {"locations": locations, "sources": [0], "destinations": list(range(1, len(locations))), "metrics": ["duration"]}
+    data = await request_json("routing", ORS_MATRIX_URL, headers={"Authorization": key}, method="POST", json_body=body)
+    try:
+        row = data["durations"][0]
+    except (TypeError, KeyError, IndexError):
+        return None
+    if len(row) != len(venues):
+        return None
+    return [None if d is None else max(1, math.ceil(d / 60)) for d in row]
 
 def walk_estimate_minutes(lat1: float, lng1: float, lat2: float, lng2: float) -> int:
     # Conservative street-grid multiplier over straight-line distance; always disclosed as an estimate.
@@ -775,6 +801,10 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     parsed=await parse_query_text(q.free_text)
     budget=parsed.get("budget",q.budget); walk=parsed.get("max_walk_min",q.max_walk_min)
     places,_=await live_candidates(q)
+    routed=await routed_walk_minutes(q.lat,q.lng,places)
+    for venue,minutes in zip(places,routed or []):
+        if minutes is not None:
+            venue["walk_min"],venue["walk_method"]=minutes,"routed"
     weather=await forecast_for_query(q)
     max_price={"$":1,"$$":2,"$$$":3}[budget]
     pre_candidates=[]
@@ -804,7 +834,7 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     median=ratings[len(ratings)//2] if ratings else 3.0
     candidates=[]
     for v,reach in eligible:
-        v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") else None}
+        v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") not in (None,"routed") else None}
         scored=score_venue(v,median,weather,reach)
         candidates.append({"venue":v,"score":scored,"reachability":reach,
                            "explanation":f"Open at your requested time, within budget, and about {v['walk_min']} minutes on foot; walk time is an estimate where labeled.",
@@ -813,7 +843,7 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     candidates=candidates[:8]
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
-    used=["google_places","mbta","nws"]+(["gemini"] if q.free_text else [])
+    used=["google_places","mbta","nws","routing"]+(["gemini"] if q.free_text else [])
     return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
 
 @app.on_event("startup")
