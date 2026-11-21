@@ -19,14 +19,17 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.tiktok import init_session_db, router as tiktok_router
+from app.neon import catalog_places, persist_recommendation_run, status as neon_status
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 SCORING = yaml.safe_load((ROOT / "scoring" / "weights.yaml").read_text())
 assert abs(sum(SCORING["weights"].values()) - 1.0) < 1e-9, "scoring/weights.yaml weights must sum to 1"
 DEMO = os.getenv("APP_MODE", "demo") == "demo"
@@ -626,20 +629,25 @@ def osm_candidates(q: QueryInput, category: str | None = None, limit: int = 20) 
     HEALTH["overpass"].update(status="cached", last_success_at=generated.isoformat(), checked_at=now_iso(),
                               cache_age_s=round((datetime.now(timezone.utc) - generated).total_seconds()),
                               detail="Bundled OSM snapshot (backup while Google Places is unavailable)")
-    near = sorted(((haversine(q.lat, q.lng, v["lat"], v["lng"]), v) for v in snap["venues"]), key=lambda x: x[0])
+    return normalize_osm_candidates(q, snap["venues"], category, limit)
+
+
+def normalize_osm_candidates(q: QueryInput, venues: list[dict[str, Any]], category: str | None = None,
+                             limit: int = 20) -> list[dict[str, Any]]:
+    near = sorted(((haversine(q.lat, q.lng, v["lat"], v["lng"]), v) for v in venues), key=lambda x: x[0])
     out = []
     for distance, v in near:
         if distance > 5000 or len(out) >= limit:
             break
         if osm_open_at(v.get("opening_hours"), q.time) != "open":
             continue
-        raw = v.get("amenity") or v.get("leisure") or "venue"
+        raw = v.get("amenity") or v.get("leisure") or v.get("tourism") or "venue"
         kind = {"nightclub": "night_club"}.get(raw, raw)  # match Google type names
-        cuisine = [c.strip() for c in v.get("cuisine", "").split(";") if c.strip()]
+        cuisine = [c.strip() for c in (v.get("cuisine") or "").split(";") if c.strip()]
         categories = [kind, *(["bar"] if kind == "pub" else []), *cuisine]  # a "bar" search should include pubs
         if not matches_category({"categories": categories}, category):
             continue
-        address = " ".join(x for x in (v.get("addr:housenumber"), v.get("addr:street")) if x) or None
+        address = v.get("address") or " ".join(x for x in (v.get("addr:housenumber"), v.get("addr:street")) if x) or None
         out.append({"id": f"osm-{v['osm'].replace('/', '-')}", "name": v["name"], "lat": v["lat"], "lng": v["lng"], "address": address,
                     "categories": categories, "price_level": None, "rating": None, "review_count": None,
                     "open_hours": {"status_at_requested_time": "open", "periods": None,
@@ -1235,10 +1243,19 @@ async def forecast_for_query(q: QueryInput) -> dict[str, Any]:
 async def make_query(q: QueryInput) -> dict[str,Any]:
     parsed=await parse_query_text(q.free_text)
     budget=parsed.get("budget",q.budget); walk=parsed.get("max_walk_min",q.max_walk_min)
-    places,_=await live_candidates(q)
-    backup=not DEMO and not places  # Google unavailable (no key, quota, outage): fall back to the OSM snapshot, never mixed
-    if backup: places=osm_candidates(q,parsed.get("category"))
-    else: HEALTH["overpass"].update(status="disabled", detail="Standby: used only when Google Places is unavailable")
+    places = []
+    catalog = None if DEMO else await catalog_places(q.lat, q.lng)
+    if catalog:
+        places = normalize_osm_candidates(q, catalog, parsed.get("category"))
+    backup = bool(places)
+    if places:
+        HEALTH["overpass"].update(status="cached", checked_at=now_iso(), last_success_at=now_iso(),
+                                  detail="OpenStreetMap places from Neon catalog; hours checked for requested time")
+    else:
+        places,_=await live_candidates(q)
+        backup=not DEMO and not places
+        if backup: places=osm_candidates(q,parsed.get("category"))
+        else: HEALTH["overpass"].update(status="disabled", detail="Standby: no catalog candidates; using Google Places or demo")
     # Google Places coordinates must not go to a non-Google routing service (Maps ToS 3.2.3(a),(c)), so only
     # non-Google candidates are routed; Google venues keep the labeled straight-line estimate.
     to_route=[v for v in places if routable(v)]
@@ -1286,7 +1303,7 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
         v["walk_estimate"]={"minutes":v["walk_min"],"method":v.get("walk_method","fixture_estimate"),"label":"approx." if v.get("walk_method") not in (None,"routed") else None}
         near=None if games is None else [g for g in games if haversine(v["lat"],v["lng"],*SPORTS_VENUES[g["venue"]])<=SCORING["events"]["radius_m"]]
         v["nearby_events"]=None if near is None else len(near)
-        v["nearby_games"]=[f'{g["label"]} at {g["venue"]}, {g["start"].astimezone(ZoneInfo("America/New_York")).strftime("%-I:%M %p")}' for g in near or []]
+        v["nearby_games"]=[f'{g["label"]} at {g["venue"]}, {g["start"].astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")}' for g in near or []]
         scored=score_venue(v,median,weather,reach,prefs)
         candidates.append({"venue":v,"score":scored,"reachability":reach,
                            "explanation":(f"Open at your requested time, within budget, and about {v['walk_min']} minutes on foot; walk time is an estimate where labeled." if reach["method"]=="walking_fallback"
@@ -1297,7 +1314,9 @@ async def make_query(q: QueryInput) -> dict[str,Any]:
     for c in candidates:
         c["explain_facts"]=explanation_facts(c)
     used=["google_places","mbta","nws","sports"]+(["overpass"] if backup else [])+(["routing"] if to_route else [])+(["gemini"] if q.free_text else [])+(["tiktok"] if prefs else [])
-    return envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override,"preference_tags":prefs},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
+    payload = envelope({"query":{"time":q.time.isoformat(),"budget":budget,"lat":q.lat,"lng":q.lng,"max_walk_min":walk,"travel":q.travel,"free_text":q.free_text,"parsed_filters":parsed,"weather_override":q.weather_override,"preference_tags":prefs},"recommendations":candidates,"empty_message":None if candidates else "Nothing open and reachable at that time. Try an earlier hour or a higher budget.","weather":weather},used)
+    payload["storage"] = await persist_recommendation_run(q.model_dump(mode="json"), payload)
+    return payload
 
 @app.on_event("startup")
 async def discover_boston_resources() -> None:
@@ -1307,7 +1326,7 @@ async def discover_boston_resources() -> None:
         await resolve_ckan_resources(force=True)
 
 @app.get("/api/health")
-def health() -> dict[str,str]: return {"status":"ok"}
+def health() -> dict[str,Any]: return {"status":"ok", "neon": neon_status()}
 # Per-visitor and site-wide sliding windows (requests per 60 s) on the endpoints that spend Google/Gemini/ORS/MBTA quota.
 RATE_LIMITS = {"/api/query": (30, 120), "/api/recommendations": (30, 120), "/api/explain": (30, 120)}
 _HITS: dict[tuple[str, str], deque[float]] = {}

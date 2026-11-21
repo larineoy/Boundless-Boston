@@ -12,6 +12,8 @@ services:
         value: 3.12.8
       - key: APP_MODE
         value: live
+      - key: DATABASE_URL
+        sync: false
       # shortcut: free-plan disk is wiped on each deploy/restart, so the cache starts cold; add a Render disk if warm cache matters.
       - key: CACHE_DB
         value: /tmp/public-cache.sqlite3

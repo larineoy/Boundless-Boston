@@ -78,7 +78,7 @@ function TransitRow({r}:{r:Rec}){
  const ride=rideMin(out);
  return <div className="transit-row"><span className="line-pill" style={{background:out.line.color,color:out.line.mode==='bus'?'#141414':'#fff'}}>{out.line.name}</span><span className="transit-stops">{r.reachability.walk_to_stop_min!=null?`${r.reachability.walk_to_stop_min} min walk · `:''}{out.from_stop} → {out.to_stop}{ride?` · ${ride} min ride`:''}{r.reachability.walk_from_stop_min!=null?` · ${r.reachability.walk_from_stop_min} min walk`:''}</span>{last?.depart_at&&<span className="last-train"><Moon size={13} strokeWidth={2.5}/> {last.last_of_night?'Last train back':'Latest train back'} {clock(last.depart_at)}</span>}</div>;
 }
-const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data',sports:'Red Sox & Bruins schedules',overpass:'OpenStreetMap (backup)',tiktok:'TikTok taste'};
+const sourceNames:Record<string,string>={google_places:'Google Places',mbta:'MBTA',nws:'National Weather Service',boston_ckan:'Boston Open Data',sports:'Red Sox & Bruins schedules',overpass:'OpenStreetMap',tiktok:'TikTok taste'};
 const futureTime=()=>{const d=new Date(Date.now()+2*60*60*1000);d.setMinutes(0,0,0);const p=(n:number)=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`};
 
 function loadSaved():SavedPlace[]{
@@ -93,8 +93,8 @@ function tagsFromSaved(items:SavedPlace[]):string[]{
 }
 
 function App(){
- const [view,setView]=useState(location.hash==='#atlas'?'atlas':'planner');
- useEffect(()=>{const sync=()=>setView(location.hash==='#atlas'?'atlas':'planner');window.addEventListener('hashchange',sync);return ()=>window.removeEventListener('hashchange',sync)},[]);
+ const [view,setView]=useState(location.hash==='#map'||location.hash==='#atlas'?'map':'planner');
+ useEffect(()=>{const sync=()=>setView(location.hash==='#map'||location.hash==='#atlas'?'map':'planner');window.addEventListener('hashchange',sync);return ()=>window.removeEventListener('hashchange',sync)},[]);
  const [when,setWhen]=useState(futureTime()); const [budget,setBudget]=useState('$$'); const [walk,setWalk]=useState(30); const [travel,setTravel]=useState<'walk'|'walk_t'>('walk_t'); const [text,setText]=useState(''); const [weather,setWeather]=useState<'clear'|'rain'>('clear'); const [data,setData]=useState<Result|null>(null); const [health,setHealth]=useState<any[]>([]); const [loading,setLoading]=useState(false); const [expanded,setExpanded]=useState<string|null>(null); const [modal,setModal]=useState(false); const [loc,setLoc]=useState(center); const [error,setError]=useState(''); const [neighborhood,setNeighborhood]=useState<Neighborhood|null>(null); const [neighborhoodBusy,setNeighborhoodBusy]=useState(false); const [whys,setWhys]=useState<Record<string,string>>({});
  const [saved,setSaved]=useState<SavedPlace[]>(()=>loadSaved());
  const [showSaved,setShowSaved]=useState(false);
@@ -189,11 +189,11 @@ function App(){
   <svg width="0" height="0" style={{position:'absolute'}} aria-hidden="true"><defs><filter id="wobble"><feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="7"/><feDisplacementMap in="SourceGraphic" scale="3.2"/></filter></defs></svg>
   <header className="topbar">
    <a className="brand" href="#"><Trolley color="#DA291C" size={34}/><span>boundless<span className="brand-dot">.</span></span></a>
-   <nav className="stops" aria-label="Sections"><span className="rail"/>{[['#plan','Plan'],['#shortlist','Shortlist'],['#sources','Sources'],['#atlas','College Atlas']].map(([h,l])=><a key={h} href={h} className="stop"><span className="stop-dot"/><span className="stop-label">{l}</span></a>)}</nav>
+   <nav className="stops" aria-label="Sections"><span className="rail"/>{[['#plan','Plan'],['#shortlist','Shortlist'],['#sources','Sources'],['#map','Map']].map(([h,l])=><a key={h} href={h} className={`stop ${l==='Map'?'map-stop':''}`} aria-current={view==='map'&&l==='Map'?'page':undefined}><span className="stop-dot"/><span className="stop-label">{l}</span></a>)}</nav>
    <button className="icon-button" aria-label="Open source information" onClick={showDetails}><SlidersHorizontal size={18} strokeWidth={2.5}/></button>
   </header>
   <main>
-   {view==='atlas'?<Suspense fallback={<p role="status">Loading College Atlas…</p>}><AtlasView/></Suspense>:<>
+   {view==='map'?<Suspense fallback={<p role="status">Loading Boston map…</p>}><AtlasView/></Suspense>:<>
    <section className="hero"><div className="hero-copy-wrap"><div className="eyebrow">BOSTON · TONIGHT · BY FOOT OR BY T</div><h1>Boston after <span className="squiggle">hours.</span></h1><p className="hero-copy">Good plans start with a place. Great ones get you home on the last train.</p></div><HeroDoodle/></section>
    <section id="plan" className="planner sketch"><div className="sign-band" style={{background:'#2b9bd8'}}><span>WHERE TO TONIGHT?</span><ArrowRight className="band-arrow" size={24} strokeWidth={3}/></div>
     <div className="sign-body"><div className="form-grid"><label className="field field-wide"><span>THE VIBE</span><div className="input-wrap"><Sparkles size={16} strokeWidth={2.5}/><input value={text} onChange={e=>setText(e.target.value)} placeholder="cheap ramen, live music, somewhere cozy…" onKeyDown={e=>e.key==='Enter'&&load()}/><kbd>↵</kbd></div></label>

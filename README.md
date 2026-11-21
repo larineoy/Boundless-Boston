@@ -76,6 +76,17 @@ dependencies use a frozen `pnpm-lock.yaml`. Base images support AMD64 and ARM64;
 publish both with a configured Buildx builder using
 `docker buildx build --platform linux/amd64,linux/arm64 -t YOUR_REGISTRY/boundless-boston --push .`.
 
+### Persistent local demo (Windows)
+
+After installing the Python and frontend dependencies and configuring `.env`,
+run `npm run demo` once. It starts the API and frontend in the background at
+http://127.0.0.1:5173 and returns when both are healthy. Repeating the command
+is safe. The supervisor restarts crashed processes and restarts services after
+three failed health checks following a 60-second startup grace period.
+Use `npm run demo:status` to check services and `npm run demo:stop` to stop them.
+Logs are in `.cache/demo/`. Processes survive closing the launching terminal;
+run the command again after rebooting or signing out of Windows.
+
 ### Hosted services
 
 - **API:** Render, from `render.yaml` (free web service, `APP_MODE=live`). Set `GOOGLE_MAPS_API_KEY` and `MBTA_API_KEY` in the Render dashboard. The free plan sleeps when idle, so the first request after a pause can take about a minute.
@@ -83,4 +94,17 @@ publish both with a configured Buildx builder using
 
 ## Neon
 
+In live mode (`APP_MODE=live`), `/api/query` first reads nearby OpenStreetMap
+places from `public.catalog_venues` in Neon. Set the backend's `DATABASE_URL`
+to the pooled connection for the production branch containing that catalog,
+and install `backend/requirements.txt`. The frontend already calls this endpoint;
+database credentials stay on the server. `/api/health` includes `neon.catalog`
+after a search. Eligible places must have known opening hours that include the
+requested time. If the catalog is unavailable or yields no eligible candidates,
+discovery falls back to Google Places and then the bundled OSM snapshot.
+Demo mode continues to use fixtures. Redeploy the API after changing its code
+or environment; no frontend API URL change is required.
+
 `neon.ts` remains the Neon project configuration. The application API is FastAPI and needs a Python 3.12 runtime; it is not packaged as a Neon Function. Deploying the database/service requires a configured Neon project and a compatible Python hosting target. No credentials or deployment identifiers belong in the frontend bundle.
+
+Recommendation snapshots are persisted to Neon when the API has a `DATABASE_URL`. The application uses the pooled URL for request traffic; apply `backend/migrations/0002_recommendations.sql` with a direct connection when setting up another branch. Each `/api/query` response remains available if Neon is temporarily unavailable and includes a `storage` status for observability.

@@ -29,6 +29,9 @@ a{color:inherit}
 .stop:hover .stop-dot{background:var(--sky)}
 .stop-label{position:absolute;top:30px;font:600 15px var(--head);letter-spacing:.3px;transform:rotate(-14deg);white-space:nowrap}
 .stop:hover .stop-label{color:var(--sky)}
+.map-stop .stop-dot{border-color:var(--sky)}
+.map-stop[aria-current="page"] .stop-dot{background:var(--sky)}
+.map-stop[aria-current="page"] .stop-label{color:var(--sky)}
 .icon-button,.heart,.modal-close{background:#fff;border:2.5px solid var(--ink);border-radius:12px;padding:7px;display:grid;place-items:center;box-shadow:3px 3px 0 var(--ink)}
 .icon-button:active,.heart:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink)}
 

@@ -6,3 +6,5 @@ pydantic>=2.8,<3
 PyYAML>=6,<7
 # Required for ZoneInfo on hosts without an IANA timezone database.
 tzdata>=2025.2
+asyncpg>=0.29,<1
+python-dotenv>=1,<2
