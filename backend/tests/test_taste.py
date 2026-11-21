@@ -66,6 +66,7 @@ def test_preferences_demo_endpoint():
 
 
 def test_query_accepts_preference_tags():
+    m._HITS.clear()  # earlier rate-limit tests can leave the sliding window full
     client = TestClient(m.app)
     from datetime import datetime, timedelta, timezone
 
