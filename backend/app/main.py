@@ -344,9 +344,12 @@ def grounded(why: Any, facts: dict[str, Any]) -> bool:
     return numbers(why) <= numbers(json.dumps(facts))
 
 async def gemini_explanation(facts: dict[str, Any]) -> str | None:
-    """A grounded one-line explanation for one place, or None so the caller keeps the template."""
+    """A grounded one-line explanation for one place, or None so the caller keeps the template.
+    Off unless GEMINI_EXPLAIN=on: the facts are Google Places content, and the free Gemini tier may use inputs to improve
+    models (Maps ToS 3.2.3(c)(vii)). Turn it on with a paid Gemini tier."""
     key = os.getenv("GEMINI_API_KEY")
-    if DEMO or not key:
+    if DEMO or not key or os.getenv("GEMINI_EXPLAIN", "off").lower() != "on":
+        HEALTH["gemini_explain"].update(status="disabled", detail="Off by default (set GEMINI_EXPLAIN=on with a paid Gemini tier)")
         return None
     body = {"contents": [{"parts": [{"text": EXPLAIN_PROMPT + json.dumps(facts)}]}],
             "generationConfig": {"responseMimeType": "application/json", "responseSchema": EXPLAIN_SCHEMA, "temperature": 0.4}}

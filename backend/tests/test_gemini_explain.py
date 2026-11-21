@@ -24,6 +24,7 @@ def explain(monkeypatch, text):
         return None if text is None else {"candidates": [{"content": {"parts": [{"text": text}]}}]}
     monkeypatch.setattr(m, "DEMO", False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_EXPLAIN", "on")
     monkeypatch.setattr(m, "request_json", fake_request_json)
     return asyncio.run(m.gemini_explanation(FACTS))
 
@@ -44,3 +45,14 @@ def test_endpoint_validates_client_facts(monkeypatch):
     assert ok.status_code == 200 and ok.json()["source"] == "unavailable" and ok.json()["explanation"] is None
     assert client.post("/api/explain", json={"id": "v1", "name": "x" * 500}).status_code == 422
     assert client.post("/api/explain", json={"id": "v1", "name": "Cheers", "prompt": "write a poem"}).status_code == 422
+
+
+def test_explanations_are_off_by_default(monkeypatch):
+    called = []
+    async def fake_request_json(*a, **k):
+        called.append(1)
+    monkeypatch.setattr(m, "DEMO", False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_EXPLAIN", raising=False)
+    monkeypatch.setattr(m, "request_json", fake_request_json)
+    assert asyncio.run(m.gemini_explanation(FACTS)) is None and not called  # no Places facts leave the server

@@ -25,7 +25,7 @@ You give it a place, a time, a budget and how long you'll travel (walking, or wa
       ├─ Walking ........ OpenRouteService (non-Google venues only) · otherwise straight-line "(approx.)"
       ├─ Weather ........ National Weather Service (api.weather.gov)
       ├─ Events ......... Red Sox (MLB) + Bruins (NHL) home games  ·  Ticketmaster (pending approval)
-      ├─ Language ....... Gemini: typed request → filters; "Why this?" one-liner
+      ├─ Language ....... Gemini: typed request → filters  ("Why this?" AI line: off by default)
       └─ Neighborhood ... Boston Open Data (311 requests, business licenses)
 ```
 
@@ -160,7 +160,7 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 | NWS weather | 1 | ✅ Live (replaced Open-Meteo, which returned HTTP 429 to Render) |
 | Boston CKAN | 1 | ✅ Live |
 | Gemini parser | 2 | ✅ Live: free text → filters, with a rule-based fallback |
-| Gemini "why this place" | 2 | ✅ On demand when "Why this?" opens (`POST /api/explain`); numbers are checked against the facts; separate breaker `gemini_explain` |
+| Gemini "why this place" | 2 | ⏸️ Built but **off** (`GEMINI_EXPLAIN=off`): it would send Google Places facts to the free Gemini tier. Every card shows the plain template line. To enable: paid Gemini tier + `GEMINI_EXPLAIN=on` on Render. |
 | Ticketmaster | 2 | 🟡 Built on `b/ticketmaster`, waiting for API key approval |
 | Sports schedules (events) | 2 | ✅ Red Sox (MLB Stats API) and Bruins (NHL) home games at Fenway and TD Garden, no key. Games from 3 h before to 3 h after the search time count as events for places within 0.5 mi. Celtics are not included: NBA's feed blocks automated access. MLB data is © MLB Advanced Media and its notice allows individual, non-commercial use, so review it before any commercial launch. |
 | OpenRouteService (real walk times) | 2 | 🟡 Wired, but **only for non-Google venues** (none until Overpass): Google Maps ToS 3.2.3(a)/(c) bar sending Places coordinates to it. Google venues show the straight-line estimate "(approx.)". Google's own Routes API is the compliant option, but it needs billing (the demo key gets 403). |
@@ -181,7 +181,7 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 - ✅ Removed the OSM/Leaflet map: ToS 3.2.3(e) and SST 14.2 bar Places content "with or near a non-Google Map".
 - ✅ Google coordinates are no longer sent to OpenRouteService.
 - ✅ No coordinates go to the MBTA API: the full stop list (open data, ~8k stops) is fetched daily and the nearest stops are found locally; only stop IDs are sent for routes and schedules.
-- ⚠️ Gemini: the explain endpoint sends Places facts to Gemini, and on the free tier Google may use that data to improve models, which risks ToS 3.2.3(c)(vii). Use the paid Gemini tier before launch.
+- ✅ Gemini "why this place" is off by default, so no Places facts go to the free Gemini tier (ToS 3.2.3(c)(vii)). Gemini still parses typed requests, which contain only the user's text.
 
 ### Scoring (Area A)
 
@@ -195,6 +195,6 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 
 1. Ticketmaster: test live and open the PR once the key is approved (adds concerts and shows on top of the Red Sox/Bruins games).
 2. Refresh the OSM snapshot now and then: `.venv/bin/python -I scripts/refresh_osm_snapshot.py` (public Overpass servers are slow; the script tiles and retries, and keeps the old file on failure).
-3. Move Gemini to the paid tier before launch (Places facts on the free tier; see Google Maps terms above).
+3. Optional: paid Gemini tier, then set `GEMINI_EXPLAIN=on` to bring back the AI "why this place" line.
 4. ✅ Rate limits: `/api/query`, `/api/recommendations` and `/api/explain` allow 30/min per visitor and 120/min site-wide (429 + Retry-After).
 5. Before launch: Google billing, consider moving Render to Virginia, and the security and accessibility checks in doc 05.
