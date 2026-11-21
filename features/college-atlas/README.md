@@ -73,4 +73,4 @@ Open College Atlas in the navigation or visit /#atlas. The app lazy-loads the in
 
 Campus callbacks also receive null when River view clears the selection.
 
-Validation: pnpm typecheck, pnpm build, and pnpm e2e. The Atlas browser tests intentionally disable WebGL to exercise fallback, search, selection, responsive layout and remount cleanup.
+Validation: pnpm typecheck, pnpm build, and pnpm e2e. The Atlas browser tests cover fallback, search, selection, responsive layout and remount cleanup with WebGL disabled, plus map initialization and perspective controls with WebGL enabled and a deterministic style fixture. Live tile availability is not asserted.

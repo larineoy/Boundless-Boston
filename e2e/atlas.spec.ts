@@ -29,4 +29,3 @@ test('atlas controls fit a narrow viewport', async ({ page }) => {
   await expect(page.locator('#selection')).toContainText('MIT');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
-
