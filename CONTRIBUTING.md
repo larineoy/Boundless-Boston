@@ -86,6 +86,10 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 | Yelp | 2 | ⬜ Deferred (strict usage terms) |
 | Census ACS | 3 | ⬜ Stretch goal |
 
+### Interface
+
+- ✅ Crux Garden Plasma UI redesign: translucent planner and recommendation surfaces, aurora background, responsive layout, and browser-local saved places.
+
 ### Platform
 
 - ✅ CI on PRs: pytest, typecheck, build, and a Playwright demo walkthrough (`e2e/demo.spec.ts`, demo fixtures, no keys).

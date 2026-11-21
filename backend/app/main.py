@@ -19,10 +19,11 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import yaml
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.staging import StagingStore
+from app.catalog import CAMPUSES, OSM_ATTRIBUTION, read_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 SCORING = yaml.safe_load((ROOT / "scoring" / "weights.yaml").read_text())
@@ -143,7 +144,7 @@ async def request_json(source: str, url: str, params: dict[str, Any] | None = No
         return None
     params = params or {}
     cache_key = normalized_params({"url": url, "params": params, "body": json_body, "method": method})
-    cache_allowed = source not in ("google_places", "gemini", "gemini_explain", "routing")  # Places terms; no user free text; ORS echoes origin + Places coordinates
+    cache_allowed = source not in ("google_places", "yelp", "gemini", "gemini_explain", "routing")  # Provider content stays live-only; no user free text
     if clock.time() < OPEN_UNTIL.get(source, 0):
         cached_when_open = cache_get(source, cache_key) if cache_allowed else None
         HEALTH[source].update(status="open-circuit", detail="Circuit open for 60 seconds")
@@ -982,3 +983,48 @@ async def neighborhood(lat:float=Query(ge=-90,le=90),lng:float=Query(ge=-180,le=
     return envelope(result,["boston_ckan"])
 @app.get("/api/sources/health")
 def source_health() -> dict[str,Any]: return envelope({"sources":[HEALTH[s] for s in SOURCES]},[])
+
+
+@app.get("/api/catalog/campuses")
+def catalog_campuses():
+    return {"campuses": [{"id": c[0], "name": c[1], "lat": c[2], "lng": c[3], "radius_m": 2000} for c in CAMPUSES]}
+
+
+@app.get("/api/catalog")
+def catalog(campus: str | None = None, category: str | None = Query(default=None, max_length=80),
+            limit: int = Query(default=50, ge=1, le=100), offset: int = Query(default=0, ge=0, le=10000)):
+    if campus is not None and campus not in {c[0] for c in CAMPUSES}:
+        raise HTTPException(422, "Unknown campus")
+    if not os.getenv("DATABASE_URL"):
+        raise HTTPException(503, "Venue catalog requires DATABASE_URL")
+    try:
+        venues = read_catalog(campus, category, limit, offset)
+    except Exception:
+        raise HTTPException(503, "Venue catalog temporarily unavailable") from None
+    return {"venues": venues, "limit": limit, "offset": offset,
+            "next_offset": offset + limit if len(venues) == limit else None,
+            "attributions": [OSM_ATTRIBUTION], "popularity_status": "unverified",
+            "detail": "OSM listings refreshed daily; records older than seven days are excluded. Hours are raw OSM text, not a confirmation of opening."}
+
+
+@app.get("/api/catalog/yelp")
+async def catalog_yelp(response: Response, campus: str, limit: int = Query(default=50, ge=1, le=50)):
+    """Popularity-ordered live discovery, separate from the durable OSM catalog."""
+    response.headers["Cache-Control"] = "no-store"
+    center = next((c for c in CAMPUSES if c[0] == campus), None)
+    if center is None:
+        raise HTTPException(422, "Unknown campus")
+    key = os.getenv("YELP_API_KEY")
+    if not key or DEMO:
+        raise HTTPException(503, "Live Yelp discovery requires APP_MODE=live and YELP_API_KEY")
+    data = await request_json("yelp", "https://api.yelp.com/v3/businesses/search",
+        {"latitude": center[2], "longitude": center[3], "radius": 2000,
+         "categories": "restaurants,food,bars,arts", "sort_by": "review_count", "limit": limit},
+        headers={"Authorization": f"Bearer {key}"})
+    if data is None:
+        raise HTTPException(503, "Yelp is temporarily unavailable")
+    return {"source": "yelp", "status": "live", "campus": campus, "sort_by": "review_count",
+            "businesses": [{k: b.get(k) for k in ("id", "name", "url", "rating", "review_count", "price", "categories", "location", "coordinates")}
+                           for b in data.get("businesses", []) if not b.get("is_closed")],
+            "attributions": [{"source": "yelp", "text": "Yelp", "url": "https://www.yelp.com", "required_logo": "Yelp"}],
+            "detail": "Live-only Yelp content. Display Yelp branding and link each business to its returned Yelp URL."}
