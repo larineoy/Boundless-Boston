@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { PlasmaProvider } from '@cruxgarden/plasma-ui';
+import { Plasma, PlasmaProvider } from '@cruxgarden/plasma-ui';
 import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
 import './style.css';
 
@@ -22,7 +22,7 @@ function App(){
  const whyKey=(r:Rec)=>JSON.stringify(r.explain_facts);
  async function toggleWhy(r:Rec){const id=r.venue.id,key=whyKey(r);setExpanded(expanded===id?null:id);if(expanded===id||!r.explain_facts||key in whys)return;setWhys(w=>({...w,[key]:''}));try{const res=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:key});const out=await res.json();if(res.ok&&out.explanation)setWhys(w=>({...w,[key]:out.explanation}))}catch{}}
  const recs=data?.recommendations||[];
- return <div className="app-shell">
+ return <Plasma as="div" className="app-shell" group="app" padding={0} frost={0.12} elevation={0.1}>
   <header className="topbar"><a className="brand" href="#"><span className="brand-icon"><Compass size={18}/></span><span>boundless<span className="brand-dot">.</span></span></a><div className="top-meta"><span className="live-pip"/>BOSTON, MA <span className="meta-divider">/</span> TONIGHT <Moon size={14}/></div><button className="icon-button" aria-label="Open source information" onClick={showDetails}><SlidersHorizontal size={17}/></button></header>
   <main>
    <section className="hero"><div className="eyebrow"><span className="eyebrow-line"/> YOUR NIGHT, WITHOUT THE GUESSWORK</div><h1>Boston after<br/><em>hours.</em></h1><p className="hero-copy">Good plans start with a place. Great ones get you home.</p><div className="hero-orbit"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit-dot"><Moon size={18}/></div><span className="orbit-label">42° 21′ N<br/>71° 03′ W</span></div></section>
@@ -42,7 +42,7 @@ function App(){
    <section className="sources panel"><div className="sources-title"><span className="section-kicker">THE SIGNAL CHECK</span><h3>Where this comes from.</h3></div><div className="source-items">{['google_places','mbta','nws','boston_ckan'].map(s=>{const item=health.find(h=>h.source===s);return <div className="source-item" key={s}><span className={`source-dot ${item?.status==='live'?'is-live':''}`}/><span>{sourceNames[s]}</span><small>{item?.status||'demo'}</small></div>})}</div><p className="freshness">Source states and timestamps reflect the latest API response. Demo fixtures are labeled; live credentials stay server-side.</p><p className="attribution"><a href="https://www.weather.gov/" target="_blank" rel="noreferrer">Weather data by the National Weather Service</a> · <a href="https://www.mbta.com/developers/v3-api" target="_blank" rel="noreferrer">MBTA</a> · <a href="https://data.boston.gov/" target="_blank" rel="noreferrer">City of Boston Open Data</a></p></section>
   </main><footer><span>BOUNDLESS BOSTON <i>© 2026</i></span><span>MADE FOR THE WAY HOME <ArrowDownRight size={14}/></span></footer>
   {modal&&<div className="modal-backdrop" onClick={()=>setModal(false)}><section className="modal panel" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setModal(false)}><X size={18}/></button><span className="section-kicker">SOURCE DETAILS</span><h2>Trust, in the details.</h2><p>Recommendations use transparent fit scores and show whether source data is live, cached, demo, or unavailable.</p>{health.map(h=><div className="health-row" key={h.source}><span className={`source-dot ${h.status==='live'?'is-live':''}`}/><b>{sourceNames[h.source]||h.source}</b><small>{h.status}</small></div>)}<hr/><span className="section-kicker">NEIGHBORHOOD SNAPSHOT</span>{neighborhoodBusy?<p>Loading Boston Open Data…</p>:neighborhood?.["311"]?<><p>311 requests · {neighborhood["311"].period_start} to {neighborhood["311"].period_end}</p>{neighborhood["311"].top_categories.map(item=><div className="health-row" key={item.category}><b>{item.category}</b><small>{item.count}</small></div>)}<p>Recent {neighborhood.business_licenses_source||'business'}</p>{(neighborhood.business_licenses||[]).slice(0,5).map((item,i)=><div className="health-row" key={`${item.name}-${i}`}><b>{item.name||"Business"}</b><small>{item.issued_at}</small></div>)}{(neighborhood.city_contacts||[]).map(c=><p key={c.name}><a href={c.url}>{c.name}</a> · {c.phone}</p>)}</>:<p>Boston Open Data is unavailable right now. No neighborhood figures are being substituted.</p>}</section></div>}
- </div>
+ </Plasma>
 }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><PlasmaProvider maxSurfaces={16} mood="aurora" frost={0.18} opacity={0.08}><App/></PlasmaProvider></StrictMode>);
