@@ -19,11 +19,14 @@ type Rec={venue:Venue;reachability:{method:string;label?:string;outbound?:Leg|nu
 type Result={recommendations:Rec[];sources_used:{source:string;status:string}[];generated_at:string;empty_message:string|null;query:{parsed_filters?:Record<string,unknown>;preference_tags?:string[]};weather:{temperature_f:number|null;precipitation_chance_pct:number|null;forecast_for?:string;override?:string}};
 type Neighborhood={center:{lat:number;lng:number};radius_m:number;311:{top_categories:{category:string;count:number}[];period_start:string;period_end:string}|null;business_licenses:{name:string;issued_at:string;address?:string;distance_m?:number}[]|null;business_licenses_source?:string|null;city_contacts:{name:string;service:string;phone:string;url:string}[]|null};
 type SavedPlace={place_id:string;name:string;categories:string[];address:string|null;price_level:number|null;saved_at:string};
+type PlaceMention={name:string;snippet?:string;source?:string;label?:string};
 
 const SAVED_KEY='boundless.savedPlaces.v1';
 const center:[number,number]=[42.355,-71.062];
 const clock=(iso?:string)=>iso?new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}):'';
 const rideMin=(leg:Leg)=>leg.depart_at&&leg.arrive_at?Math.max(1,Math.round((Date.parse(leg.arrive_at)-Date.parse(leg.depart_at))/60000)):null;
+const normName=(s:string)=>s.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const namesOverlap=(a:string,b:string)=>{const na=normName(a),nb=normName(b);return !!na&&!!nb&&(na===nb||na.includes(nb)||nb.includes(na));};
 // Flat-vector art for the dinosaur garden (own artwork). Colors match style.css.
 const C={night:'#13213f',navy:'#1d3461',cream:'#fdf3dc',gold:'#e8be55',leaf:'#3f9a5c',leaf2:'#24704a',leaf3:'#1a5540',dino:'#7cc576',dinoDark:'#56a554',belly:'#e3f4d6',blush:'#f6a59c',lava:'#f08a3c',earth:'#6e4631'};
 function Trolley({color='#00843D',size=56}:{color?:string;size?:number}){
@@ -140,6 +143,7 @@ function App(){
  const [tiktokTags,setTiktokTags]=useState<string[]>([]);
  const [tiktokMode,setTiktokMode]=useState<'disabled'|'demo'|'live'>('disabled');
  const [tiktokBusy,setTiktokBusy]=useState(false);
+ const [placeMentions,setPlaceMentions]=useState<PlaceMention[]>([]);
 
  const savedTags=useMemo(()=>tagsFromSaved(saved),[saved]);
  const preferenceTags=useMemo(()=>{
@@ -148,6 +152,14 @@ function App(){
    return out.slice(0,12);
  },[tiktokTags,savedTags]);
  const savedIds=useMemo(()=>new Set(saved.map(s=>s.place_id)),[saved]);
+ const recsForMatch=data?.recommendations||[];
+ const tiktokMatched=useMemo(()=>{
+   return placeMentions.map(m=>{
+     const hit=recsForMatch.find(r=>namesOverlap(m.name,r.venue.name));
+     return {mention:m,venue:hit?.venue||null};
+   });
+ },[placeMentions,recsForMatch]);
+ const tiktokMatchedIds=useMemo(()=>new Set(tiktokMatched.filter(x=>x.venue).map(x=>x.venue!.id)),[tiktokMatched]);
 
  function updateSaved(next:SavedPlace[]){setSaved(next);persistSaved(next)}
  function toggleSave(v:Venue){
@@ -162,16 +174,17 @@ function App(){
   try{
     const url=forceDemo?'/api/tiktok/preferences?demo=1':'/api/tiktok/preferences';
     const res=await fetch(url,{credentials:'include'});
-    if(!res.ok){setTiktokTags([]);setTiktokMode('disabled');return}
+    if(!res.ok){setTiktokTags([]);setPlaceMentions([]);setTiktokMode('disabled');return}
     const body=await res.json();
     setTiktokTags(Array.isArray(body.preference_tags)?body.preference_tags:[]);
+    setPlaceMentions(Array.isArray(body.place_mentions)?body.place_mentions:[]);
     setTiktokMode(body.mode==='live'||body.mode==='demo'?body.mode:'disabled');
     setHealth(current=>{
       const next=[...current];
       for(const item of body.sources_used||[]){const index=next.findIndex(x=>x.source===item.source);if(index>=0)next[index]={...next[index],status:item.status};else next.push(item)}
       return next;
     });
-  }catch{setTiktokTags([]);setTiktokMode('disabled')}
+  }catch{setTiktokTags([]);setPlaceMentions([]);setTiktokMode('disabled')}
   finally{setTiktokBusy(false)}
  }
 
@@ -181,8 +194,9 @@ function App(){
     const demo=await fetch('/api/tiktok/demo',{method:'POST',credentials:'include'});
     if(demo.ok){
       const body=await demo.json();
-      if(body.connected&&(body.preference_tags||[]).length){
+      if(body.connected&&((body.preference_tags||[]).length||(body.place_mentions||[]).length)){
         setTiktokTags(body.preference_tags||[]);
+        setPlaceMentions(Array.isArray(body.place_mentions)?body.place_mentions:[]);
         setTiktokMode(body.mode==='live'?'live':'demo');
         setTiktokBusy(false);
         return;
@@ -195,7 +209,7 @@ function App(){
 
  async function disconnectTiktok(){
   await fetch('/api/tiktok/logout',{method:'POST',credentials:'include'}).catch(()=>{});
-  setTiktokTags([]);setTiktokMode('disabled');setHealth(h=>h.map(x=>x.source==='tiktok'?{...x,status:'disabled'}:x));
+  setTiktokTags([]);setPlaceMentions([]);setTiktokMode('disabled');setHealth(h=>h.map(x=>x.source==='tiktok'?{...x,status:'disabled'}:x));
  }
 
  const loadRef=useRef(load);
@@ -255,6 +269,17 @@ function App(){
       {preferenceTags.length
         ? <div className="taste-chips">{preferenceTags.map(t=><span key={t}>{t.replace('_',' ')}</span>)}</div>
         : <p className="taste-empty">Connect TikTok or save places to personalize fit scores.</p>}
+      {placeMentions.length>0&&<div className="tiktok-places">
+        <span className="section-kicker">FROM YOUR TIKTOK</span>
+        <p className="taste-empty">Guessed from captions — not official TikTok venues.</p>
+        <div className="tiktok-place-list">
+         {tiktokMatched.map(({mention,venue})=>venue
+           ? <button key={`m-${mention.name}`} className="tiktok-place matched" type="button" onClick={()=>document.getElementById(`venue-${venue.id}`)?.scrollIntoView({behavior:'smooth',block:'center'})}>
+              <b>{venue.name}</b><small>matched nearby · guessed from caption</small>
+             </button>
+           : <div key={`u-${mention.name}`} className="tiktok-place"><b>{mention.name}</b><small>guessed from caption · no nearby match yet</small></div>)}
+        </div>
+       </div>}
      </div>
      {tiktokMode==='disabled'
        ? <button className="ghost-button" onClick={connectTiktok} disabled={tiktokBusy}>{tiktokBusy?'Connecting…':'Connect TikTok'}</button>
@@ -265,15 +290,15 @@ function App(){
    <div className="section-head" id="shortlist"><div><span className="section-kicker">YOUR SHORTLIST</span><h2>{text?'A few good fits.':'Good spots nearby.'}</h2></div><button className="weather-toggle" onClick={()=>setWeather(weather==='clear'?'rain':'clear')}>{weather==='clear'?<Moon size={16} strokeWidth={2.5}/>:<CloudRain size={16} strokeWidth={2.5}/>}{weather==='clear'?'Clear skies':'Rain check'}</button></div>
    {error&&<div className="notice error sketch">{error}</div>}
    {data?.empty_message&&<div className="empty sketch"><Dino size={64}/><p>{data.empty_message}</p></div>}
-   <div className="content-grid"><section className="results-list">{recs.map((r,i)=>{const line=r.reachability.outbound?.line;const band=line?line.color:'#24704a';const dark=line?.mode==='bus';return <article className={`venue-card sketch ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}>
-    <div className="sign-band venue-band" style={{background:band,color:dark?'#141414':'#fff'}}><div><div className="tags"><span>{String(i+1).padStart(2,'0')}</span><span>{r.venue.categories[0]?.replace('_',' ')||'local favorite'}</span><span>{'$'.repeat(r.venue.price_level||1)}</span></div><h3>{r.venue.name}</h3></div>{line?<Trolley color={line.color} size={52}/>:<Steps/>}</div>
+   <div className="content-grid"><section className="results-list">{recs.map((r,i)=>{const line=r.reachability.outbound?.line;const band=line?line.color:'#24704a';const dark=line?.mode==='bus';return <article id={`venue-${r.venue.id}`} className={`venue-card sketch ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}>
+    <div className="sign-band venue-band" style={{background:band,color:dark?'#141414':'#fff'}}><div><div className="tags"><span>{String(i+1).padStart(2,'0')}</span><span>{r.venue.categories[0]?.replace('_',' ')||'local favorite'}</span><span>{'$'.repeat(r.venue.price_level||1)}</span>{tiktokMatchedIds.has(r.venue.id)?<span className="tiktok-badge">From your TikTok</span>:null}</div><h3>{r.venue.name}</h3></div>{line?<Trolley color={line.color} size={52}/>:<Steps/>}</div>
     <div className="sign-body"><div className="venue-top"><p className="venue-address">{r.venue.address}</p><button className={`heart ${savedIds.has(placeIdFor(r.venue))?'is-saved':''}`} aria-pressed={savedIds.has(placeIdFor(r.venue))} aria-label={`${savedIds.has(placeIdFor(r.venue))?'Remove':'Save'} ${r.venue.name}`} onClick={()=>toggleSave(r.venue)}><Heart size={18} strokeWidth={2.5}/></button></div>
     <div className="venue-stats"><span><span className="star">★</span> {r.venue.rating?.toFixed(1)||'—'} <small>({r.venue.review_count?.toLocaleString()||'—'})</small></span><span><MapPin size={13} strokeWidth={2.5}/> {line&&r.reachability.total_min!=null?`${r.reachability.total_min} min by T`:`${r.venue.walk_min} min walk${r.venue.walk_estimate?.label==='approx.'?' (approx.)':''}`}</span><span><TrainFront size={14} strokeWidth={2.5}/> {r.reachability.method==='predicted_round_trip'?'Live round trip':r.reachability.method==='scheduled_round_trip'?'Scheduled round trip':r.reachability.method==='walking_fallback'?'On foot':'Transit check'}</span><span className="open-status">OPEN</span></div>
     <TransitRow r={r}/><GameRow r={r}/>
     <div className="score-row"><div className="score"><strong>{Math.round(r.score.value*100)}</strong><small>FIT</small></div><div className="score-track"><div style={{width:`${Math.round(r.score.value*100)}%`}}/></div><button className="why-button" onClick={()=>toggleWhy(r)}>Why this? <ChevronDown size={14} strokeWidth={2.5}/></button></div>{expanded===r.venue.id&&<div className="breakdown"><p>{whys[whyKey(r)]||r.explanation}{whys[whyKey(r)]&&<small> · AI summary from the facts below</small>}</p><p>{r.reach_explanation}</p>{Object.entries(r.score.components).map(([name,c])=><div className="component" key={name}><span>{name}<small>{c.missing_reason?` · not used (${c.missing_reason})`:c.label==='approx.'?' · approx.':c.label==='demo'?' · demo':''}</small></span><div><i style={{width:`${Math.round(c.value*100)}%`}}/></div><b>{Math.round(c.value*100)}<small> × {c.weight.toFixed(2)}</small></b></div>)}</div>}
     <div className="attribution" translate="no">{(r.venue.attributions||[]).map((a,i)=><span key={`${a.source}-${i}`}>{a.url?<a href={a.url} target="_blank" rel="noreferrer">{a.text}</a>:a.text}{i<(r.venue.attributions.length-1)?' · ':''}</span>)}</div></div></article>})}</section>
    <aside className="map-column"><button className="neighborhood sketch" onClick={showDetails}><span className="neighborhood-icon"><Utensils size={18} strokeWidth={2.5}/></span><span><small>GET TO KNOW THE BLOCK</small><b>Neighborhood notes</b></span><ChevronRight size={18} strokeWidth={2.5}/></button><button className="neighborhood sketch saved-launch" onClick={()=>setShowSaved(true)}><span className="neighborhood-icon"><Bookmark size={18} strokeWidth={2.5}/></span><span><small>YOUR LIST</small><b>{saved.length?`${saved.length} saved place${saved.length===1?'':'s'}`:'Saved places'}</b></span><ChevronRight size={18} strokeWidth={2.5}/></button><div className="legend sketch"><span className="section-kicker">T LINE COLORS</span>{[['Red Line','#DA291C'],['Orange Line','#ED8B00'],['Green Line','#00843D'],['Blue Line','#003DA5'],['Silver Line','#7C878E'],['Bus','#FFC72C']].map(([n,c])=><div key={n} className="legend-row"><i style={{background:c}}/>{n}</div>)}</div></aside></div>
-   <section id="sources" className="sources sketch"><div className="sources-title"><span className="section-kicker">THE SIGNAL CHECK</span><h3>Where this comes from.</h3></div><div className="source-items">{['google_places','mbta','nws','boston_ckan','sports','tiktok',...(health.some(h=>h.source==='overpass'&&h.status!=='disabled')?['overpass']:[])].map(s=>{const item=health.find(h=>h.source===s);return <div className="source-item" key={s}><span className={`source-dot ${item?.status==='live'?'is-live':''}`}/><span>{sourceNames[s]}</span><small>{item?.status||'demo'}</small></div>})}</div><p className="freshness">Source states and timestamps reflect the latest API response. Demo fixtures are labeled; live credentials stay server-side. TikTok is personalization only—not venue discovery.</p><p className="attribution"><a href="https://www.weather.gov/" target="_blank" rel="noreferrer">Weather data by the National Weather Service</a> · <a href="https://www.mbta.com/developers/v3-api" target="_blank" rel="noreferrer">MBTA</a> · <a href="https://data.boston.gov/" target="_blank" rel="noreferrer">City of Boston Open Data</a>{health.some(h=>h.source==='overpass'&&h.status!=='disabled')?<> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></>:null}</p></section>
+   <section id="sources" className="sources sketch"><div className="sources-title"><span className="section-kicker">THE SIGNAL CHECK</span><h3>Where this comes from.</h3></div><div className="source-items">{['google_places','mbta','nws','boston_ckan','sports','tiktok',...(health.some(h=>h.source==='overpass'&&h.status!=='disabled')?['overpass']:[])].map(s=>{const item=health.find(h=>h.source===s);return <div className="source-item" key={s}><span className={`source-dot ${item?.status==='live'?'is-live':''}`}/><span>{sourceNames[s]}</span><small>{item?.status||'demo'}</small></div>})}</div><p className="freshness">Source states and timestamps reflect the latest API response. Demo fixtures are labeled; live credentials stay server-side. TikTok personalizes taste tags; caption place names are best-effort guesses, not official TikTok venues.</p><p className="attribution"><a href="https://www.weather.gov/" target="_blank" rel="noreferrer">Weather data by the National Weather Service</a> · <a href="https://www.mbta.com/developers/v3-api" target="_blank" rel="noreferrer">MBTA</a> · <a href="https://data.boston.gov/" target="_blank" rel="noreferrer">City of Boston Open Data</a>{health.some(h=>h.source==='overpass'&&h.status!=='disabled')?<> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a></>:null}</p></section>
   </>}
   </main><footer><span>T-RECS © 2026</span><span>MADE FOR THE WAY HOME <ArrowDownRight size={14} strokeWidth={2.5}/></span></footer>
   {modal&&<div className="modal-backdrop" onClick={()=>setModal(false)}><section className="modal sketch" role="dialog" aria-modal="true" aria-labelledby="details-title" onClick={e=>e.stopPropagation()}><button className="modal-close" aria-label="Close" autoFocus onClick={()=>setModal(false)}><X size={18} strokeWidth={2.5}/></button><span className="section-kicker">SOURCE DETAILS</span><h2 id="details-title">Trust, in the details.</h2><p>Recommendations use transparent fit scores and show whether source data is live, cached, demo, or unavailable.</p>{health.map(h=><div className="health-row" key={h.source}><span className={`source-dot ${h.status==='live'?'is-live':''}`}/><b>{sourceNames[h.source]||h.source}</b><small>{h.status}</small></div>)}<hr/><span className="section-kicker">NEIGHBORHOOD SNAPSHOT</span>{neighborhoodBusy?<p>Loading Boston Open Data…</p>:neighborhood?.["311"]?<><p>311 requests · {neighborhood["311"].period_start} to {neighborhood["311"].period_end}</p>{neighborhood["311"].top_categories.map(item=><div className="health-row" key={item.category}><b>{item.category}</b><small>{item.count}</small></div>)}<p>Recent {neighborhood.business_licenses_source||'business'}</p>{(neighborhood.business_licenses||[]).slice(0,5).map((item,i)=><div className="health-row" key={`${item.name}-${i}`}><b>{item.name||"Business"}</b><small>{item.issued_at}</small></div>)}{(neighborhood.city_contacts||[]).map(c=><p key={c.name}><a href={c.url}>{c.name}</a> · {c.phone}</p>)}</>:<p>Boston Open Data is unavailable right now. No neighborhood figures are being substituted.</p>}</section></div>}
