@@ -1,6 +1,6 @@
 import { lazy, Suspense, StrictMode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Bookmark, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Footprints, Heart, MapPin, Moon, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Bookmark, ChevronDown, ChevronRight, CloudRain, Compass, Crosshair, Footprints, Heart, MapPin, Moon, Music2, SlidersHorizontal, Sparkles, TrainFront, Utensils, X } from 'lucide-react';
 import type React from 'react';
 import '@fontsource/lilita-one/latin-400.css';
 import '@fontsource/open-sans/latin-400.css';
@@ -263,16 +263,23 @@ function App(){
     <div className="field"><span>SPEND</span><div className="segmented">{['$','$$','$$$'].map(b=><button className={budget===b?'selected':''} key={b} onClick={()=>setBudget(b)}>{b}</button>)}</div></div>
     <div className="field field-wide"><span>HOW LONG TO GET THERE <b>{walk} MIN {travel==='walk_t'?'DOOR TO DOOR':'ON FOOT'}</b></span><div className="travel-row"><div className="segmented travel-toggle" role="group" aria-label="How you'll get there">{([['walk','Walk only'],['walk_t','Walk + T']] as const).map(([k,l])=><button key={k} className={travel===k?'selected':''} aria-pressed={travel===k} onClick={()=>setTravel(k)}>{k==='walk_t'?<TrainFront size={14} strokeWidth={2.5}/>:<Footprints size={14} strokeWidth={2.5}/>}{l}</button>)}</div><div className="slider-col"><input className="range" aria-label="Trip time in minutes" type="range" min="5" max="60" step="5" value={walk} onChange={e=>setWalk(+e.target.value)} style={{'--fill':`${(walk-5)/55*100}%`} as React.CSSProperties}/><div className="range-labels"><span>QUICK HOP</span><span>WORTH THE RIDE</span></div></div></div></div>
     </div>
-    <div className="taste-row">
+    <div className={`taste-card ${tiktokMode!=='disabled'?'is-connected':''}`}>
+     <div className="taste-card-glow" aria-hidden="true"/>
+     <div className="taste-card-icon" aria-hidden="true"><Music2 size={22} strokeWidth={2.5}/></div>
      <div className="taste-meta">
-      <span className="section-kicker">YOUR TASTE</span>
+      <span className="section-kicker">{tiktokMode==='disabled'?'UNLOCK YOUR VIBE':'TASTE CONNECTED'}</span>
+      <strong className="taste-title">{tiktokMode==='disabled'?'Connect TikTok for a personal fit':'Your TikTok taste is live'}</strong>
       {preferenceTags.length
         ? <div className="taste-chips">{preferenceTags.map(t=><span key={t}>{t.replace('_',' ')}</span>)}</div>
-        : <p className="taste-empty">Connect TikTok or save places to personalize fit scores.</p>}
+        : <p className="taste-empty">{tiktokMode==='disabled'?'One tap pulls vibe tags from your videos and ranks spots that match.':'Save places too — categories boost the same taste score.'}</p>}
      </div>
      {tiktokMode==='disabled'
-       ? <button className="ghost-button" onClick={connectTiktok} disabled={tiktokBusy}>{tiktokBusy?'Connecting…':'Connect TikTok'}</button>
-       : <button className="ghost-button" onClick={disconnectTiktok}>Disconnect TikTok · {tiktokMode}</button>}
+       ? <button className="tiktok-connect" onClick={connectTiktok} disabled={tiktokBusy}>
+          <span className="tiktok-connect-shine" aria-hidden="true"/>
+          <Music2 size={18} strokeWidth={2.5}/>
+          {tiktokBusy?'Connecting…':'Connect TikTok'}
+         </button>
+       : <button className="ghost-button tiktok-disconnect" onClick={disconnectTiktok}>Disconnect · {tiktokMode}</button>}
     </div>
     <div className="form-footer"><div className="location-pill"><MapPin size={15} strokeWidth={2.5}/><span>Downtown Boston</span><button aria-label="Use current location" onClick={()=>navigator.geolocation?.getCurrentPosition(p=>setLoc([p.coords.latitude,p.coords.longitude]))}><Crosshair size={14} strokeWidth={2.5}/></button></div><button className="submit-button" onClick={load} disabled={loading}>{loading?'Finding places…':'Find spots'} <ArrowUpRight size={18} strokeWidth={3}/></button></div></div>
    </section>

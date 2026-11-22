@@ -180,6 +180,8 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
   .venue-band h3{font-size:20px}.venue-band .doodle{width:40px;height:38px}
   .last-train{margin-left:0}.source-items{grid-template-columns:1fr}
   footer{flex-direction:column;gap:8px}
+  .taste-card{flex-direction:column;align-items:stretch}.tiktok-connect{justify-content:center}
+  .atlas-view>div:last-child{min-height:680px!important}.topbar.over-hero{width:calc(100% - 32px)}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}.venue-card:hover{transform:none}}
 
@@ -191,11 +193,23 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
 .icon-button.is-active{background:var(--gold);color:var(--night)}
 .heart.is-saved{background:#e8605a;border-color:#e8605a;color:#fff}
 
-/* Taste row: Connect TikTok and saved-place tags */
-.taste-row{margin-top:20px;padding-top:16px;border-top:2px dashed #4c64a0;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.taste-meta{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1}
+/* Taste card: flashy Connect TikTok CTA inside the planner */
+.taste-card{position:relative;overflow:hidden;margin-top:20px;padding:16px 18px;display:flex;align-items:center;gap:14px;border:var(--line);border-radius:20px;background:linear-gradient(135deg,#2a4a8a 0%,#1d3461 55%,#243866 100%);box-shadow:0 5px 0 #0d1830}
+.taste-card-glow{position:absolute;inset:-40% -20% auto auto;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,rgba(232,190,85,.35),transparent 70%);pointer-events:none;animation:taste-pulse 2.8s ease-in-out infinite}
+.taste-card.is-connected{background:linear-gradient(135deg,#2f6b4a 0%,#1d3461 60%,#24407a 100%)}
+.taste-card.is-connected .taste-card-glow{background:radial-gradient(circle,rgba(63,154,92,.4),transparent 70%)}
+.taste-card-icon{position:relative;z-index:1;flex:none;width:46px;height:46px;border-radius:50%;display:grid;place-items:center;background:var(--gold);color:var(--night);border:var(--line);box-shadow:0 3px 0 #0d1830}
+.taste-meta{position:relative;z-index:1;display:flex;flex-direction:column;gap:8px;min-width:0;flex:1}
+.taste-card .section-kicker{color:var(--gold)}
+.taste-title{font:400 22px var(--head);color:var(--cream);letter-spacing:.2px}
 .taste-chips{display:flex;flex-wrap:wrap;gap:6px}
 .taste-chips span{background:var(--cream);color:var(--night);border-radius:999px;padding:4px 11px;font:400 14px var(--head)}
+.tiktok-connect{position:relative;z-index:1;overflow:hidden;display:inline-flex;align-items:center;gap:8px;background:var(--gold);color:var(--night);border:var(--line);border-radius:999px;padding:12px 18px;font:400 18px var(--head);white-space:nowrap;box-shadow:0 4px 0 #0d1830;transition:transform .12s,box-shadow .12s,background .12s}
+.tiktok-connect:hover{background:#f3d27a;transform:translateY(-1px);box-shadow:0 5px 0 #0d1830}
+.tiktok-connect:active{transform:translateY(2px);box-shadow:0 1px 0 #0d1830}
+.tiktok-connect:disabled{opacity:.7}
+.tiktok-connect-shine{position:absolute;inset:0 auto 0 -40%;width:40%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);transform:skewX(-18deg);animation:taste-shine 2.4s ease-in-out infinite}
+.tiktok-disconnect{position:relative;z-index:1}
 .tiktok-places{padding:16px 18px;display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
 .tiktok-place-list{display:flex;flex-direction:column;gap:8px}
 .tiktok-place{text-align:left;background:var(--navy2);color:var(--cream);border:var(--line);border-radius:14px;padding:10px 12px}
@@ -208,6 +222,9 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
 .ghost-button{background:var(--navy2);color:var(--cream);border:var(--line);border-radius:30px;padding:9px 16px;font:400 16px var(--head);white-space:nowrap}
 .ghost-button:hover{background:var(--gold);color:var(--night)}
 .ghost-button:disabled{opacity:.6}
+@keyframes taste-pulse{0%,100%{opacity:.55;transform:scale(1)}50%{opacity:1;transform:scale(1.08)}}
+@keyframes taste-shine{0%{left:-45%}60%,100%{left:120%}}
+@media(prefers-reduced-motion:reduce){.taste-card-glow,.tiktok-connect-shine{animation:none}}
 
 /* Saved places */
 .saved-launch{margin-top:12px}
@@ -223,4 +240,3 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
 .atlas-view{padding:24px 0 40px}
 .atlas-view h1{font-size:clamp(40px,6vw,72px);margin:12px 0;text-shadow:none}
 .atlas-view>div:last-child{height:75vh!important;min-height:600px!important;border:0;box-shadow:0 6px 0 #0d1830;border-radius:22px;overflow:hidden}
-@media(max-width:600px){.taste-row{flex-direction:column;align-items:stretch}.atlas-view>div:last-child{min-height:680px!important}.topbar.over-hero{width:calc(100% - 32px)}}
