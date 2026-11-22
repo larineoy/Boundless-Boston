@@ -269,17 +269,6 @@ function App(){
       {preferenceTags.length
         ? <div className="taste-chips">{preferenceTags.map(t=><span key={t}>{t.replace('_',' ')}</span>)}</div>
         : <p className="taste-empty">Connect TikTok or save places to personalize fit scores.</p>}
-      {placeMentions.length>0&&<div className="tiktok-places">
-        <span className="section-kicker">FROM YOUR TIKTOK</span>
-        <p className="taste-empty">Guessed from captions — not official TikTok venues.</p>
-        <div className="tiktok-place-list">
-         {tiktokMatched.map(({mention,venue})=>venue
-           ? <button key={`m-${mention.name}`} className="tiktok-place matched" type="button" onClick={()=>document.getElementById(`venue-${venue.id}`)?.scrollIntoView({behavior:'smooth',block:'center'})}>
-              <b>{venue.name}</b><small>matched nearby · guessed from caption</small>
-             </button>
-           : <div key={`u-${mention.name}`} className="tiktok-place"><b>{mention.name}</b><small>guessed from caption · no nearby match yet</small></div>)}
-        </div>
-       </div>}
      </div>
      {tiktokMode==='disabled'
        ? <button className="ghost-button" onClick={connectTiktok} disabled={tiktokBusy}>{tiktokBusy?'Connecting…':'Connect TikTok'}</button>
@@ -290,7 +279,19 @@ function App(){
    <div className="section-head" id="shortlist"><div><span className="section-kicker">YOUR SHORTLIST</span><h2>{text?'A few good fits.':'Good spots nearby.'}</h2></div><button className="weather-toggle" onClick={()=>setWeather(weather==='clear'?'rain':'clear')}>{weather==='clear'?<Moon size={16} strokeWidth={2.5}/>:<CloudRain size={16} strokeWidth={2.5}/>}{weather==='clear'?'Clear skies':'Rain check'}</button></div>
    {error&&<div className="notice error sketch">{error}</div>}
    {data?.empty_message&&<div className="empty sketch"><Dino size={64}/><p>{data.empty_message}</p></div>}
-   <div className="content-grid"><section className="results-list">{recs.map((r,i)=>{const line=r.reachability.outbound?.line;const band=line?line.color:'#24704a';const dark=line?.mode==='bus';return <article id={`venue-${r.venue.id}`} className={`venue-card sketch ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}>
+   <div className="content-grid"><section className="results-list">
+    {placeMentions.length>0&&<div className="tiktok-places sketch" aria-label="Places guessed from TikTok">
+      <span className="section-kicker">FROM YOUR TIKTOK</span>
+      <p className="taste-empty">Guessed from captions — not official TikTok venues. Existing shortlist cards stay below.</p>
+      <div className="tiktok-place-list">
+       {tiktokMatched.map(({mention,venue})=>venue
+         ? <button key={`m-${mention.name}`} className="tiktok-place matched" type="button" onClick={()=>document.getElementById(`venue-${venue.id}`)?.scrollIntoView({behavior:'smooth',block:'center'})}>
+            <b>{venue.name}</b><small>matched nearby · guessed from caption</small>
+           </button>
+         : <div key={`u-${mention.name}`} className="tiktok-place"><b>{mention.name}</b><small>guessed from caption · no nearby match yet</small></div>)}
+      </div>
+     </div>}
+    {recs.map((r,i)=>{const line=r.reachability.outbound?.line;const band=line?line.color:'#24704a';const dark=line?.mode==='bus';return <article id={`venue-${r.venue.id}`} className={`venue-card sketch ${expanded===r.venue.id?'expanded':''}`} key={r.venue.id}>
     <div className="sign-band venue-band" style={{background:band,color:dark?'#141414':'#fff'}}><div><div className="tags"><span>{String(i+1).padStart(2,'0')}</span><span>{r.venue.categories[0]?.replace('_',' ')||'local favorite'}</span><span>{'$'.repeat(r.venue.price_level||1)}</span>{tiktokMatchedIds.has(r.venue.id)?<span className="tiktok-badge">From your TikTok</span>:null}</div><h3>{r.venue.name}</h3></div>{line?<Trolley color={line.color} size={52}/>:<Steps/>}</div>
     <div className="sign-body"><div className="venue-top"><p className="venue-address">{r.venue.address}</p><button className={`heart ${savedIds.has(placeIdFor(r.venue))?'is-saved':''}`} aria-pressed={savedIds.has(placeIdFor(r.venue))} aria-label={`${savedIds.has(placeIdFor(r.venue))?'Remove':'Save'} ${r.venue.name}`} onClick={()=>toggleSave(r.venue)}><Heart size={18} strokeWidth={2.5}/></button></div>
     <div className="venue-stats"><span><span className="star">★</span> {r.venue.rating?.toFixed(1)||'—'} <small>({r.venue.review_count?.toLocaleString()||'—'})</small></span><span><MapPin size={13} strokeWidth={2.5}/> {line&&r.reachability.total_min!=null?`${r.reachability.total_min} min by T`:`${r.venue.walk_min} min walk${r.venue.walk_estimate?.label==='approx.'?' (approx.)':''}`}</span><span><TrainFront size={14} strokeWidth={2.5}/> {r.reachability.method==='predicted_round_trip'?'Live round trip':r.reachability.method==='scheduled_round_trip'?'Scheduled round trip':r.reachability.method==='walking_fallback'?'On foot':'Transit check'}</span><span className="open-status">OPEN</span></div>
