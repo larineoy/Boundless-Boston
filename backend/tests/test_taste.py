@@ -13,7 +13,25 @@ from app.tiktok import (
 def test_normalize_tag_token_maps_keywords():
     assert normalize_tag_token("Ramen") == "noodles"
     assert normalize_tag_token("coffee") == "cafe"
+    assert normalize_tag_token("seafood") == "seafood"
+    assert normalize_tag_token("sushi") == "sushi"
     assert normalize_tag_token("xyzzy") is None
+
+
+def test_normalize_place_categories_prefers_cuisine():
+    cats = m.normalize_place_categories(
+        ["restaurant", "food", "point_of_interest", "establishment", "seafood_restaurant"],
+        primary_type="seafood_restaurant",
+    )
+    assert cats[0] == "seafood"
+    assert "restaurant" in cats
+    assert "food" not in cats
+    assert "point_of_interest" not in cats
+    assert m.normalize_place_categories(["italian_restaurant", "restaurant"])[0] == "italian"
+    assert m.matches_category({"categories": ["seafood", "restaurant"]}, "restaurant")
+    assert m.matches_category({"categories": ["seafood"]}, "seafood")
+    assert m.matches_category({"categories": ["seafood"]}, "restaurant")
+    assert not m.matches_category({"categories": ["park"]}, "restaurant")
 
 
 def test_extract_tags_from_videos():

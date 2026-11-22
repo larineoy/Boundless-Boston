@@ -29,6 +29,8 @@ def test_falls_back_to_rules_when_gemini_fails(monkeypatch):
     assert run("cheap ramen under 15 min", monkeypatch, None) == {"budget": "$", "max_walk_min": 15, "category": "noodles", "parser": "rules"}
     garbled = {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}
     assert run("pizza", monkeypatch, garbled) == {"category": "pizza", "parser": "rules"}
+    assert run("seafood near the waterfront", monkeypatch, None) == {"category": "seafood", "parser": "rules"}
+    assert m.parse_free_text("italian dinner") == {"category": "italian"}
 
 
 def test_no_text_means_no_filters(monkeypatch):

@@ -4,6 +4,7 @@ Start here. This page covers what the app does, how it fits together, how to shi
 
 _Last updated: 2026-11-22_ · **Live site:** https://boundless-boston-web-5ze8.onrender.com · **API:** https://boundless-boston-api-5ze8.onrender.com
 
+
 ## What it does
 
 You give it a place, a time, a budget and how long you'll travel (walking, or walking + the T). It returns up to 8 places that are **open then, within budget, and reachable there and back**, and it shows where every piece of data came from (live, cached, demo or unavailable). Fixture data is never shown as live.
@@ -203,6 +204,7 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 
 - Saved places: heart toggle persists in browser `localStorage`; Saved panel lists/unsaves; categories feed taste tags.
 - Partly done: TikTok Connect UI + taste chips: planner taste card with gold CTA, pulse/shine motion, and connected state; demo path works locally; real account connect needs deployed callback, Render TikTok env vars, and TikTok Sandbox/Live setup.
+- Google Places restaurant categories: cuisine-specific slugs (seafood, italian, sushi, …) preferred over bare `restaurant` for cards, filters, and taste tags.
 
 ### Up next
 
