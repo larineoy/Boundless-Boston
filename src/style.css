@@ -196,7 +196,7 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
 .taste-meta{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1}
 .taste-chips{display:flex;flex-wrap:wrap;gap:6px}
 .taste-chips span{background:var(--cream);color:var(--night);border-radius:999px;padding:4px 11px;font:400 14px var(--head)}
-.tiktok-places{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.tiktok-places{padding:16px 18px;display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
 .tiktok-place-list{display:flex;flex-direction:column;gap:8px}
 .tiktok-place{text-align:left;background:var(--navy2);color:var(--cream);border:var(--line);border-radius:14px;padding:10px 12px}
 .tiktok-place.matched{cursor:pointer}
