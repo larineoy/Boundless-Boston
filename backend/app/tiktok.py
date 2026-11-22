@@ -219,16 +219,12 @@ def normalize_tag_token(token: str) -> str | None:
         return None
     if cleaned in TAG_KEYWORDS:
         return TAG_KEYWORDS[cleaned]
-    # #bostonseafood / #italianfood / #sushitok → cuisine slug
-    for suffix in ("food", "foodie", "restaurant", "tok", "tiktok", "boston", "eats", "cuisine", "dinner", "lunch", "spot"):
-        if cleaned.endswith(suffix) and len(cleaned) > len(suffix) + 2:
-            stem = cleaned[: -len(suffix)].strip("_")
-            if not stem:
-                continue
-            if stem in TAG_KEYWORDS:
-                return TAG_KEYWORDS[stem]
-            if stem in SPECIFIC_FOOD_TAGS:
-                return stem
+    # #bostonseafood / #italianfood → longest cuisine keyword embedded in the hashtag
+    for key, slug in sorted(TAG_KEYWORDS.items(), key=lambda item: len(item[0]), reverse=True):
+        if len(key) < 5:
+            continue  # skip short tokens like bar/pub that false-positive inside other words
+        if key in cleaned:
+            return slug
     return None
 
 
