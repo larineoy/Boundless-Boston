@@ -196,6 +196,14 @@ footer span:last-child{display:flex;gap:6px;align-items:center}
 .taste-meta{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1}
 .taste-chips{display:flex;flex-wrap:wrap;gap:6px}
 .taste-chips span{background:var(--cream);color:var(--night);border-radius:999px;padding:4px 11px;font:400 14px var(--head)}
+.tiktok-places{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.tiktok-place-list{display:flex;flex-direction:column;gap:8px}
+.tiktok-place{text-align:left;background:var(--navy2);color:var(--cream);border:var(--line);border-radius:14px;padding:10px 12px}
+.tiktok-place.matched{cursor:pointer}
+.tiktok-place.matched:hover{background:var(--gold);color:var(--night)}
+.tiktok-place b{display:block;font:700 15px var(--head);margin-bottom:2px}
+.tiktok-place small{color:inherit;opacity:.8;font-size:12px}
+.tags .tiktok-badge{background:var(--gold);color:var(--night);border-radius:999px;padding:2px 8px;font:700 11px var(--head);text-transform:none;letter-spacing:0}
 .taste-empty{margin:0;font-size:14px;color:var(--muted)}
 .ghost-button{background:var(--navy2);color:var(--cream);border:var(--line);border-radius:30px;padding:9px 16px;font:400 16px var(--head);white-space:nowrap}
 .ghost-button:hover{background:var(--gold);color:var(--night)}

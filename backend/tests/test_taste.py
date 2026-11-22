@@ -2,7 +2,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as m
-from app.tiktok import extract_tags_from_videos, normalize_tag_token
+from app.tiktok import (
+    extract_place_mentions_from_videos,
+    extract_tags_from_videos,
+    match_place_mentions_to_venues,
+    normalize_tag_token,
+)
 
 
 def test_normalize_tag_token_maps_keywords():
@@ -23,6 +28,25 @@ def test_extract_tags_from_videos():
     assert "noodles" in names
     assert "cafe" in names
     assert "bar" in names
+
+
+def test_extract_and_match_place_mentions():
+    mentions = extract_place_mentions_from_videos(
+        [
+            {"title": "Dinner at Democracy Brewing", "video_description": "#boston"},
+            {"title": 'Late night at "jm Curley"', "video_description": ""},
+        ]
+    )
+    names = [m["name"] for m in mentions]
+    assert any("Democracy" in n for n in names)
+    assert any("Curley" in n for n in names)
+    matched = match_place_mentions_to_venues(
+        mentions,
+        [{"id": "1", "name": "Democracy Brewing", "address": "35 Temple Place", "categories": ["bar"]}],
+    )
+    hit = next(m for m in matched if "Democracy" in m["name"])
+    assert hit["matched_venue"]["id"] == "1"
+    assert "guessed" in hit["label"]
 
 
 def test_taste_score_jaccard_and_missing():
@@ -63,6 +87,8 @@ def test_preferences_demo_endpoint():
     body = res.json()
     assert body["mode"] == "demo"
     assert "noodles" in body["preference_tags"]
+    assert body["place_mentions"]
+    assert body["place_mentions"][0]["name"]
 
 
 def test_query_accepts_preference_tags():

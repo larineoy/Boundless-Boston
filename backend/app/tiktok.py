@@ -67,6 +67,18 @@ DEMO_TAGS = [
     {"tag": "bar", "count": 2},
 ]
 
+# Best-effort place guesses for demo connect (not official TikTok POIs).
+DEMO_PLACE_MENTIONS = [
+    {"name": "Democracy Brewing", "snippet": "Dinner at Democracy Brewing #boston", "source": "demo"},
+    {"name": "jm Curley", "snippet": "Late night at jm Curley", "source": "demo"},
+]
+
+_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "your", "our", "best", "boston",
+    "tonight", "today", "video", "tiktok", "fyp", "viral", "check", "out", "here", "there",
+    "place", "spot", "food", "good", "great", "love", "like", "just", "really", "very",
+}
+
 router = APIRouter(prefix="/api/tiktok", tags=["tiktok"])
 
 
@@ -145,6 +157,90 @@ def extract_tags_from_videos(videos: list[dict[str, Any]], limit: int = 8) -> li
             if slug:
                 counts[slug] += 1
     return [{"tag": tag, "count": count} for tag, count in counts.most_common(limit)]
+
+
+def _clean_place_candidate(raw: str) -> str | None:
+    name = re.sub(r"\s+", " ", raw.strip(" .,!?:;\"'")).strip()
+    name = re.sub(r"[#@].*$", "", name).strip()
+    if len(name) < 3 or len(name) > 48:
+        return None
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", name)
+    if len(words) < 1 or len(words) > 5:
+        return None
+    lowered = [w.lower() for w in words]
+    if all(w in _STOPWORDS or normalize_tag_token(w) for w in lowered):
+        return None
+    # Prefer multi-word names, or a single capitalized token.
+    if len(words) == 1 and not words[0][:1].isupper():
+        return None
+    return " ".join(words)
+
+
+def extract_place_mentions_from_videos(videos: list[dict[str, Any]], limit: int = 8) -> list[dict[str, str]]:
+    """Best-effort place names from captions. Not official TikTok venue IDs."""
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    patterns = [
+        re.compile(r"(?:at|from|@)\s+[\"“']?([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z][A-Za-z0-9'&.,-]*){0,4})[\"”']?"),
+        re.compile(r"[\"“]([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z0-9'&.,-]*){0,4})[\"”]"),
+        re.compile(r"\b([A-Z][a-z0-9'&.]+(?:\s+[A-Z][a-z0-9'&.]+){1,3})\b"),
+    ]
+    for video in videos:
+        title = str(video.get("title") or "")
+        desc = str(video.get("video_description") or "")
+        snippet_src = title or desc
+        text = f"{title} {desc}".strip()
+        if not text:
+            continue
+        for pattern in patterns:
+            for match in pattern.findall(text):
+                cleaned = _clean_place_candidate(match)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    {
+                        "name": cleaned,
+                        "snippet": snippet_src[:120],
+                        "source": "caption_guess",
+                    }
+                )
+                if len(found) >= limit:
+                    return found
+    return found
+
+
+def match_place_mentions_to_venues(
+    mentions: list[dict[str, str]],
+    venues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach local venue matches when caption names fuzzy-match venue names."""
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+    out: list[dict[str, Any]] = []
+    for mention in mentions:
+        mname = norm(mention.get("name") or "")
+        matched = None
+        for venue in venues:
+            vname = norm(str(venue.get("name") or ""))
+            if not mname or not vname:
+                continue
+            if mname == vname or mname in vname or vname in mname:
+                matched = {
+                    "id": venue.get("id"),
+                    "name": venue.get("name"),
+                    "address": venue.get("address"),
+                    "categories": venue.get("categories") or [],
+                }
+                break
+        row = {**mention, "matched_venue": matched, "label": "guessed from TikTok caption"}
+        out.append(row)
+    return out
 
 
 def _set_session(session_id: str, access_token: str, refresh_token: str | None, open_id: str | None, expires_in: int) -> None:
@@ -273,12 +369,18 @@ async def _fetch_videos(access_token: str) -> list[dict[str, Any]]:
     return videos if isinstance(videos, list) else []
 
 
-def preferences_payload(tags: list[dict[str, str | int]], status: str, detail: str = "") -> dict[str, Any]:
+def preferences_payload(
+    tags: list[dict[str, str | int]],
+    status: str,
+    detail: str = "",
+    place_mentions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "connected": status in ("live", "demo"),
         "mode": status,
         "tags": tags,
         "preference_tags": [t["tag"] for t in tags],
+        "place_mentions": place_mentions or [],
         "detail": detail,
         "sources_used": [
             {
@@ -318,7 +420,7 @@ async def tiktok_preferences(request: Request) -> dict[str, Any]:
         # Allow explicit demo personalization without OAuth when APP_MODE=demo.
         if request.query_params.get("demo") == "1" or request.cookies.get("bb_tiktok_demo") == "1":
             _touch_health("demo", "Demo TikTok taste fixtures")
-            return preferences_payload(DEMO_TAGS, "demo", "Demo TikTok taste fixtures")
+            return preferences_payload(DEMO_TAGS, "demo", "Demo TikTok taste fixtures", DEMO_PLACE_MENTIONS)
         return preferences_payload([], "disabled", "Not connected")
 
     if not session:
@@ -329,12 +431,14 @@ async def tiktok_preferences(request: Request) -> dict[str, Any]:
 
     videos = await _fetch_videos(session["access_token"])
     tags = extract_tags_from_videos(videos)
-    if not tags and demo_mode:
+    places = extract_place_mentions_from_videos(videos)
+    if not tags and not places and demo_mode:
         _touch_health("demo", "Connected session with empty video list; demo tags")
-        return preferences_payload(DEMO_TAGS, "demo", "Connected session with empty video list; demo tags")
-    status = "live" if tags else "disabled"
-    _touch_health(status, "" if tags else "No mappable tags from videos")
-    return preferences_payload(tags, status, "" if tags else "No mappable tags from videos")
+        return preferences_payload(DEMO_TAGS, "demo", "Connected session with empty video list; demo tags", DEMO_PLACE_MENTIONS)
+    status = "live" if tags or places else "disabled"
+    detail = "" if tags or places else "No mappable tags from videos"
+    _touch_health(status, detail)
+    return preferences_payload(tags, status, detail, places)
 
 
 @router.post("/logout")
@@ -353,4 +457,4 @@ async def tiktok_demo_enable(response: Response) -> dict[str, Any]:
         return preferences_payload([], "disabled", "Use Login Kit in live mode")
     response.set_cookie("bb_tiktok_demo", "1", max_age=SESSION_TTL_S, **_cookie_kwargs())
     _touch_health("demo", "Demo TikTok taste fixtures")
-    return preferences_payload(DEMO_TAGS, "demo", "Demo TikTok taste fixtures")
+    return preferences_payload(DEMO_TAGS, "demo", "Demo TikTok taste fixtures", DEMO_PLACE_MENTIONS)
