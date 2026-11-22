@@ -74,9 +74,18 @@ DEMO_PLACE_MENTIONS = [
 ]
 
 _STOPWORDS = {
-    "the", "and", "for", "with", "from", "this", "that", "your", "our", "best", "boston",
+    "the", "and", "for", "with", "from", "this", "that", "your", "our", "my", "best", "boston",
     "tonight", "today", "video", "tiktok", "fyp", "viral", "check", "out", "here", "there",
     "place", "spot", "food", "good", "great", "love", "like", "just", "really", "very",
+    "school", "highschool", "high", "college", "campus", "class", "homework", "teacher",
+    "join", "follow", "subscribe", "download", "sign", "link", "bio", "click", "comment",
+    "share", "repost", "duet", "stitch", "live", "stream", "club", "app", "promo", "code",
+}
+
+# Reject candidates that start with marketing / CTA language.
+_CTA_PREFIXES = {
+    "join", "follow", "subscribe", "download", "sign", "click", "check", "try", "get",
+    "use", "install", "watch", "like", "share", "comment", "dm", "visit",
 }
 
 router = APIRouter(prefix="/api/tiktok", tags=["tiktok"])
@@ -165,13 +174,18 @@ def _clean_place_candidate(raw: str) -> str | None:
     if len(name) < 3 or len(name) > 48:
         return None
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'&.-]*", name)
-    if len(words) < 1 or len(words) > 5:
+    if len(words) < 2 or len(words) > 5:  # real venue names are usually multi-word
         return None
     lowered = [w.lower() for w in words]
+    if lowered[0] in _CTA_PREFIXES:
+        return None
+    if any(w in {"your", "my", "our", "school", "highschool", "high", "class"} for w in lowered):
+        return None
     if all(w in _STOPWORDS or normalize_tag_token(w) for w in lowered):
         return None
-    # Prefer multi-word names, or a single capitalized token.
-    if len(words) == 1 and not words[0][:1].isupper():
+    # Require at least one capitalized content word (not a stopword).
+    content = [w for w, low in zip(words, lowered) if low not in _STOPWORDS]
+    if not content or not any(w[:1].isupper() for w in content):
         return None
     return " ".join(words)
 
@@ -180,10 +194,10 @@ def extract_place_mentions_from_videos(videos: list[dict[str, Any]], limit: int 
     """Best-effort place names from captions. Not official TikTok venue IDs."""
     found: list[dict[str, str]] = []
     seen: set[str] = set()
+    # Prefer explicit "at/from/@ Place" or quoted names; avoid loose Title Case sweeps.
     patterns = [
-        re.compile(r"(?:at|from|@)\s+[\"“']?([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z][A-Za-z0-9'&.,-]*){0,4})[\"”']?"),
-        re.compile(r"[\"“]([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z0-9'&.,-]*){0,4})[\"”]"),
-        re.compile(r"\b([A-Z][a-z0-9'&.]+(?:\s+[A-Z][a-z0-9'&.]+){1,3})\b"),
+        re.compile(r"(?:at|from|@)\s+[\"“']?([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z][A-Za-z0-9'&.,-]*){1,4})[\"”']?"),
+        re.compile(r"[\"“]([A-Za-z][A-Za-z0-9'&.]*(?:\s+[A-Za-z0-9'&.,-]*){1,4})[\"”]"),
     ]
     for video in videos:
         title = str(video.get("title") or "")

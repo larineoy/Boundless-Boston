@@ -35,11 +35,18 @@ def test_extract_and_match_place_mentions():
         [
             {"title": "Dinner at Democracy Brewing", "video_description": "#boston"},
             {"title": 'Late night at "jm Curley"', "video_description": ""},
+            {"title": "back to your school", "video_description": "Join Sightshare Club today"},
+            {"title": "your highschool memories", "video_description": "Follow for more"},
         ]
     )
     names = [m["name"] for m in mentions]
     assert any("Democracy" in n for n in names)
     assert any("Curley" in n for n in names)
+    joined = " | ".join(names).lower()
+    assert "your school" not in joined
+    assert "highschool" not in joined
+    assert "sightshare" not in joined
+    assert "join" not in joined
     matched = match_place_mentions_to_venues(
         mentions,
         [{"id": "1", "name": "Democracy Brewing", "address": "35 Temple Place", "categories": ["bar"]}],
