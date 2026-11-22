@@ -17,9 +17,8 @@
   },
   "dependencies": {
     "@cruxgarden/plasma-ui": "^0.8.0",
-    "@fontsource/akshar": "^5.3.1",
-    "@fontsource/krona-one": "^5.3.0",
-    "@fontsource/noto-sans": "^5.3.0",
+    "@fontsource/lilita-one": "^5.3.0",
+    "@fontsource/open-sans": "^5.3.0",
     "@neon/config": "^1.14.5",
     "@neon/env": "^2.1.8",
     "@vitejs/plugin-react": "^4.3.4",

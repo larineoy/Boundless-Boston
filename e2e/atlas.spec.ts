@@ -15,7 +15,7 @@ test('atlas remains searchable without WebGL and restores the planner', async ({
   await expect(page.locator('#campus option')).toHaveCount(20);
   await expect(page.getByRole('button', { name: '2D view' })).toBeDisabled();
   await page.getByRole('link', { name: 'Plan', exact: true }).click();
-  await expect(page.getByRole('button', { name: /Find my night/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Find spots/ })).toBeVisible();
   await expect(page.locator('#campus')).toHaveCount(0);
   await page.getByRole('link', { name: 'Map', exact: true }).click();
   await expect(page.locator('#campus option')).toHaveCount(20);
