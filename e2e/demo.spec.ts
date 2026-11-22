@@ -20,7 +20,7 @@ function nextBoston(hhmm: string): string {
 
 async function searchAt(page: Page, hhmm: string) {
   await page.locator('input[type=datetime-local]').fill(nextBoston(hhmm));
-  await page.getByRole('button', { name: /Find my night/ }).click();
+  await page.getByRole('button', { name: /Find spots/ }).click();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -50,7 +50,7 @@ test('rain lowers the outdoor park and lifts indoor places', async ({ page }) =>
   const parkBefore = Number(await fit('Boston Public Garden').textContent());
   const phoBefore = Number(await fit('Pho Pasteur').textContent());
   await page.getByRole('button', { name: /Clear skies/ }).click();
-  await page.getByRole('button', { name: /Find my night/ }).click();
+  await page.getByRole('button', { name: /Find spots/ }).click();
   await expect(page.getByRole('button', { name: /Rain check/ })).toBeVisible();
   await expect.poll(async () => Number(await fit('Boston Public Garden').textContent())).toBeLessThan(parkBefore);
   await expect.poll(async () => Number(await fit('Pho Pasteur').textContent())).toBeGreaterThan(phoBefore);
@@ -59,7 +59,7 @@ test('rain lowers the outdoor park and lifts indoor places', async ({ page }) =>
 test('a too-strict search shows the exact empty state', async ({ page }) => {
   await page.getByRole('button', { name: '$', exact: true }).click();
   await page.locator('input[type=range]').fill('5');
-  await page.getByRole('button', { name: /Find my night/ }).click();
+  await page.getByRole('button', { name: /Find spots/ }).click();
   await expect(page.getByText('Nothing open and reachable at that time. Try an earlier hour or a higher budget.')).toBeVisible();
   await expect(cards(page)).toHaveCount(0);
 });
