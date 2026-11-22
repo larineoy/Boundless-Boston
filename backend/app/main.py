@@ -275,19 +275,98 @@ def parse_free_text(text: str | None) -> dict[str, Any]:
     if any(x in s for x in ("cheap","inexpensive","budget")): out["budget"]="$"
     walk=re.search(r"(?:under|within|less than)\s+(\d+)\s*(?:min|minute)",s)
     if walk: out["max_walk_min"]=int(walk.group(1))
-    for word,category in (("ramen","noodles"),("pizza","pizza"),("coffee","cafe"),("park","park")):
-        if word in s: out["category"]=category; break
+    for word, category in (
+        ("ramen", "noodles"), ("pho", "noodles"), ("noodle", "noodles"),
+        ("pizza", "pizza"), ("sushi", "sushi"), ("seafood", "seafood"), ("oyster", "seafood"),
+        ("italian", "italian"), ("mexican", "mexican"), ("taco", "mexican"),
+        ("chinese", "chinese"), ("thai", "thai"), ("indian", "indian"),
+        ("japanese", "japanese"), ("vietnamese", "vietnamese"), ("korean", "korean"),
+        ("mediterranean", "mediterranean"), ("greek", "mediterranean"),
+        ("steak", "steak"), ("bbq", "bbq"), ("barbecue", "bbq"),
+        ("burger", "hamburger"), ("brunch", "brunch"), ("breakfast", "breakfast"),
+        ("coffee", "cafe"), ("cafe", "cafe"), ("park", "park"),
+        ("restaurant", "restaurant"),
+    ):
+        if word in s:
+            out["category"] = category
+            break
     return out
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-CATEGORIES = ["noodles", "pizza", "cafe", "park", "bar", "night_club", "restaurant"]
+# Prefer cuisine-specific restaurant tags over a bare "restaurant" when the request is clear.
+CATEGORIES = [
+    "noodles", "pizza", "sushi", "seafood", "italian", "mexican", "chinese", "thai", "indian",
+    "japanese", "vietnamese", "korean", "mediterranean", "steak", "bbq", "hamburger", "brunch",
+    "breakfast", "cafe", "park", "bar", "night_club", "restaurant",
+]
+# Cuisine slugs that should satisfy a generic "restaurant" search / indoor food place.
+RESTAURANT_CUISINES = {
+    "noodles", "pizza", "sushi", "seafood", "italian", "mexican", "chinese", "thai", "indian",
+    "japanese", "vietnamese", "korean", "mediterranean", "steak", "bbq", "hamburger", "brunch",
+    "breakfast", "diner", "vegan", "vegetarian", "french", "american",
+}
+# Google Places type → short category slug used for cards, filters, and taste overlap.
+GOOGLE_TYPE_SLUGS = {
+    "seafood_restaurant": "seafood", "sushi_restaurant": "sushi", "ramen_restaurant": "noodles",
+    "vietnamese_restaurant": "vietnamese", "italian_restaurant": "italian", "mexican_restaurant": "mexican",
+    "chinese_restaurant": "chinese", "thai_restaurant": "thai", "indian_restaurant": "indian",
+    "japanese_restaurant": "japanese", "korean_restaurant": "korean", "american_restaurant": "american",
+    "mediterranean_restaurant": "mediterranean", "greek_restaurant": "mediterranean",
+    "french_restaurant": "french", "steak_house": "steak", "barbecue_restaurant": "bbq",
+    "hamburger_restaurant": "hamburger", "pizza_restaurant": "pizza", "breakfast_restaurant": "breakfast",
+    "brunch_restaurant": "brunch", "vegan_restaurant": "vegan", "vegetarian_restaurant": "vegetarian",
+    "diner": "diner", "fast_food_restaurant": "restaurant", "fine_dining_restaurant": "restaurant",
+    "restaurant": "restaurant", "cafe": "cafe", "coffee_shop": "cafe", "bakery": "cafe",
+    "bar": "bar", "wine_bar": "bar", "pub": "bar", "night_club": "night_club",
+    "park": "park", "national_park": "park", "dog_park": "park",
+}
+_GENERIC_PLACE_TYPES = {
+    "point_of_interest", "establishment", "food", "store", "geocode", "premise", "street_address",
+    "route", "political", "locality", "sublocality", "neighborhood", "tourist_attraction",
+}
 GEMINI_SCHEMA = {"type": "OBJECT", "properties": {
     "budget": {"type": "STRING", "enum": ["$", "$$", "$$$"], "nullable": True},
     "max_walk_min": {"type": "INTEGER", "nullable": True},
     "category": {"type": "STRING", "enum": CATEGORIES, "nullable": True}}}
 GEMINI_PROMPT = ("Extract search filters from a Boston night-out request. Set a field only when the request states or clearly "
                  "implies it: budget ($ cheap, $$ moderate, $$$ upscale), max_walk_min (walking limit in minutes), "
-                 "category (closest of: " + ", ".join(CATEGORIES) + "). Otherwise use null.\nRequest: ")
+                 "category (closest of: " + ", ".join(CATEGORIES) + "; prefer a cuisine like seafood or italian over bare restaurant). "
+                 "Otherwise use null.\nRequest: ")
+
+
+def normalize_place_categories(types: list[Any] | None, primary_type: str | None = None) -> list[str]:
+    """Prefer cuisine-specific Google types over bare restaurant / noise types for display and taste."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        if raw is None:
+            return
+        key = str(raw).casefold().strip()
+        if not key or key in _GENERIC_PLACE_TYPES:
+            return
+        slug = GOOGLE_TYPE_SLUGS.get(key)
+        if slug is None:
+            if key.endswith("_restaurant"):
+                slug = key.removesuffix("_restaurant") or "restaurant"
+            elif key in RESTAURANT_CUISINES or key in CATEGORIES:
+                slug = key
+            else:
+                return
+        if slug not in seen:
+            seen.add(slug)
+            ordered.append(slug)
+
+    add(primary_type)
+    for t in types or []:
+        add(t)
+    if not ordered:
+        return ["restaurant"] if primary_type or types else []
+    # Put specific cuisine ahead of a bare restaurant tag when both appear.
+    specific = [c for c in ordered if c != "restaurant"]
+    if "restaurant" in ordered:
+        return [*specific, "restaurant"] if specific else ["restaurant"]
+    return ordered
 
 def valid_filters(raw: Any) -> dict[str, Any]:
     """Keep only filters that pass the same bounds as the request schema; the model's output is untrusted."""
@@ -391,13 +470,20 @@ def matches_category(venue: dict[str, Any], wanted: str | None) -> bool:
         return True
     categories=[str(c).casefold() for c in venue.get("categories", [])]
     if wanted == "noodles":
-        return any("ramen" in c or "noodle" in c or "japanese" in c or "vietnamese" in c for c in categories)
+        return any("ramen" in c or "noodle" in c or c in ("japanese", "vietnamese") for c in categories)
     if wanted == "pizza":
         return any("pizza" in c for c in categories)
     if wanted == "cafe":
         return any("cafe" in c or "coffee" in c or "bakery" in c for c in categories)
     if wanted == "park":
         return any("park" in c or "garden" in c for c in categories)
+    if wanted == "restaurant":
+        return any(
+            c == "restaurant" or c in RESTAURANT_CUISINES or c.endswith("_restaurant") or "restaurant" in c
+            for c in categories
+        )
+    if wanted in RESTAURANT_CUISINES:
+        return any(wanted in c or c == wanted for c in categories)
     return wanted in categories
 
 def taste_score(categories: list[str] | None, preference_tags: list[str] | None) -> dict[str, Any]:
@@ -679,10 +765,12 @@ async def live_candidates(q: QueryInput) -> tuple[list[dict[str,Any]],bool]:
             hours=p.get("currentOpeningHours") or p.get("regularOpeningHours")
             tz=p.get("timeZone",{}).get("id") if isinstance(p.get("timeZone"),dict) else None
             types=p.get("types",[])
-            place_types=[str(t).casefold() for t in types]
+            primary=p.get("primaryType")
+            categories=normalize_place_categories(types, primary)
+            place_types=[str(t).casefold() for t in ([primary] if primary else []) + list(types)]
             if any("park" in t or "garden" in t for t in place_types):
                 indoor_outdoor="outdoor"
-            elif any(any(word in t for word in ("restaurant","cafe","bakery","bar","night_club","food")) for t in place_types):
+            elif any(any(word in t for word in ("restaurant","cafe","bakery","bar","night_club","food")) for t in place_types) or any(c in RESTAURANT_CUISINES for c in categories):
                 indoor_outdoor="indoor"
             else:
                 indoor_outdoor="unknown"
@@ -691,7 +779,7 @@ async def live_candidates(q: QueryInput) -> tuple[list[dict[str,Any]],bool]:
             for attr in p.get("attributions",[]):
                 if attr.get("provider"):
                     provider_attrs.append({"source":"google_places","text":attr["provider"],"url":attr.get("providerUri")})
-            result.append({"id":p.get("id",str(uuid4())),"name":p.get("displayName",{}).get("text","Venue"),"lat":latitude,"lng":longitude,"address":p.get("formattedAddress"),"categories":types or [p.get("primaryType","venue")],"price_level":price,"rating":p.get("rating"),"review_count":p.get("userRatingCount"),"open_hours":{"status_at_requested_time":opening_at(hours,q.time,tz),"periods":(hours or {}).get("periods"),"timezone":tz},"indoor_outdoor":indoor_outdoor,"walk_min":walk_estimate_minutes(q.lat,q.lng,latitude,longitude),"walk_method":"straight_line_estimate","source_refs":[{"source":"google_places","external_id":p.get("id"),"url":p.get("googleMapsUri")}],"attributions":provider_attrs,"momentum_delta":delta,"momentum_meta":velocity_meta})
+            result.append({"id":p.get("id",str(uuid4())),"name":p.get("displayName",{}).get("text","Venue"),"lat":latitude,"lng":longitude,"address":p.get("formattedAddress"),"categories":categories or ["venue"],"price_level":price,"rating":p.get("rating"),"review_count":p.get("userRatingCount"),"open_hours":{"status_at_requested_time":opening_at(hours,q.time,tz),"periods":(hours or {}).get("periods"),"timezone":tz},"indoor_outdoor":indoor_outdoor,"walk_min":walk_estimate_minutes(q.lat,q.lng,latitude,longitude),"walk_method":"straight_line_estimate","source_refs":[{"source":"google_places","external_id":p.get("id"),"url":p.get("googleMapsUri")}],"attributions":provider_attrs,"momentum_delta":delta,"momentum_meta":velocity_meta})
         return result, False
     except Exception:
         HEALTH["google_places"].update(status="disabled",detail="Google Places unavailable")
