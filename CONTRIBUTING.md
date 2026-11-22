@@ -205,6 +205,7 @@ Demo mode needs no keys. Live mode uses whichever keys are set, and any source w
 - Saved places: heart toggle persists in browser `localStorage`; Saved panel lists/unsaves; categories feed taste tags.
 - Partly done: TikTok Connect UI + taste chips: planner taste card with gold CTA, pulse/shine motion, and connected state; demo path works locally; real account connect needs deployed callback, Render TikTok env vars, and TikTok Sandbox/Live setup.
 - Google Places restaurant categories: cuisine-specific slugs (seafood, italian, sushi, …) preferred over bare `restaurant` for cards, filters, and taste tags.
+- TikTok taste tags: phrase/hashtag cuisine extraction; bare `restaurant` / `club` no longer crowd out seafood, italian, etc.
 
 ### Up next
 

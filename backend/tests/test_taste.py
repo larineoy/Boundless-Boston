@@ -15,6 +15,11 @@ def test_normalize_tag_token_maps_keywords():
     assert normalize_tag_token("coffee") == "cafe"
     assert normalize_tag_token("seafood") == "seafood"
     assert normalize_tag_token("sushi") == "sushi"
+    assert normalize_tag_token("bostonseafood") == "seafood"
+    assert normalize_tag_token("italianfood") == "italian"
+    assert normalize_tag_token("barbara") is None  # do not substring-match "bar"
+    assert normalize_tag_token("club") is None  # bare club is too noisy
+    assert normalize_tag_token("nightclub") == "night_club"
     assert normalize_tag_token("xyzzy") is None
 
 
@@ -40,12 +45,18 @@ def test_extract_tags_from_videos():
             {"title": "Best ramen in Boston #noodles", "video_description": "late night noodles"},
             {"title": "Cozy cafe morning", "video_description": "#coffee"},
             {"title": "Live music at a bar", "video_description": ""},
+            {"title": "Dinner at an Italian spot", "video_description": "#bostonitalianfood lobster roll"},
+            {"title": "Join our club tonight", "video_description": "school club meeting"},
         ]
     )
     names = [t["tag"] for t in tags]
     assert "noodles" in names
     assert "cafe" in names
     assert "bar" in names
+    assert "italian" in names
+    assert "seafood" in names
+    assert "restaurant" not in names  # cuisine signals suppress bare restaurant
+    assert "night_club" not in names  # bare "club" no longer counts
 
 
 def test_extract_and_match_place_mentions():
