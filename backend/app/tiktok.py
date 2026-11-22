@@ -33,56 +33,109 @@ USER_INFO_URL = "https://open.tiktokapis.com/v2/user/info/"
 VIDEO_LIST_URL = "https://open.tiktokapis.com/v2/video/list/"
 
 # Map free-text tokens from video titles/descriptions onto venue category slugs used by scoring.
+# Prefer cuisine-specific slugs; keep bare "restaurant" only when no cuisine signal appears.
 TAG_KEYWORDS: dict[str, str] = {
     "ramen": "noodles",
     "noodle": "noodles",
     "noodles": "noodles",
     "pho": "noodles",
+    "udon": "noodles",
+    "soba": "noodles",
     "pizza": "pizza",
+    "pizzeria": "pizza",
     "coffee": "cafe",
     "cafe": "cafe",
     "bakery": "cafe",
     "espresso": "cafe",
+    "latte": "cafe",
+    "matcha": "cafe",
     "park": "park",
     "garden": "park",
     "outdoors": "park",
     "bar": "bar",
     "cocktail": "bar",
+    "cocktails": "bar",
     "pub": "bar",
-    "club": "night_club",
+    "speakeasy": "bar",
+    "winebar": "bar",
+    "nightclub": "night_club",
+    "night_club": "night_club",
     "nightlife": "night_club",
-    "dj": "night_club",
+    "clubbing": "night_club",
+    "djset": "night_club",
     "restaurant": "restaurant",
     "dinner": "restaurant",
+    "eatery": "restaurant",
     "seafood": "seafood",
     "oyster": "seafood",
+    "oysters": "seafood",
+    "lobster": "seafood",
+    "clam": "seafood",
+    "clams": "seafood",
     "sushi": "sushi",
+    "sashimi": "sushi",
     "italian": "italian",
     "pasta": "italian",
+    "trattoria": "italian",
     "mexican": "mexican",
     "taco": "mexican",
     "tacos": "mexican",
+    "burrito": "mexican",
     "chinese": "chinese",
+    "dimsum": "chinese",
+    "dumplings": "chinese",
+    "dumpling": "chinese",
     "thai": "thai",
     "indian": "indian",
+    "curry": "indian",
     "japanese": "japanese",
     "vietnamese": "vietnamese",
     "korean": "korean",
-    "mediterranean": "mediterranean",
-    "greek": "mediterranean",
-    "steak": "steak",
     "bbq": "bbq",
     "barbecue": "bbq",
+    "mediterranean": "mediterranean",
+    "greek": "mediterranean",
+    "falafel": "mediterranean",
+    "steak": "steak",
+    "steakhouse": "steak",
     "burger": "hamburger",
+    "burgers": "hamburger",
     "brunch": "brunch",
     "breakfast": "breakfast",
+    "vegan": "vegan",
+    "vegetarian": "vegetarian",
     "cozy": "cafe",
+    "livemusic": "bar",
     "live_music": "bar",
-    "music": "bar",
+}
+
+# Longer phrases scanned before word tokens (order = specificity).
+TAG_PHRASES: tuple[tuple[str, str], ...] = (
+    ("dim sum", "chinese"),
+    ("hot pot", "chinese"),
+    ("night club", "night_club"),
+    ("live music", "bar"),
+    ("wine bar", "bar"),
+    ("food truck", "restaurant"),
+    ("fine dining", "restaurant"),
+    ("omakase", "sushi"),
+    ("poke bowl", "sushi"),
+    ("neapolitan pizza", "pizza"),
+    ("new england clam", "seafood"),
+    ("clam chowder", "seafood"),
+    ("lobster roll", "seafood"),
+)
+
+# Cuisine (and other specific) tags that should outrank a bare "restaurant" chip.
+SPECIFIC_FOOD_TAGS = {
+    "noodles", "pizza", "sushi", "seafood", "italian", "mexican", "chinese", "thai", "indian",
+    "japanese", "vietnamese", "korean", "mediterranean", "steak", "bbq", "hamburger", "brunch",
+    "breakfast", "vegan", "vegetarian", "cafe",
 }
 
 DEMO_TAGS = [
     {"tag": "noodles", "count": 4},
+    {"tag": "seafood", "count": 3},
     {"tag": "cafe", "count": 3},
     {"tag": "bar", "count": 2},
 ]
@@ -160,31 +213,48 @@ def _pkce_challenge(verifier: str) -> str:
 
 
 def normalize_tag_token(token: str) -> str | None:
+    """Exact keyword / compound-hashtag match only — no loose substring hits like bar⊂barbara."""
     cleaned = re.sub(r"[^a-z0-9_]+", "", token.lower().replace("-", "_").replace(" ", "_"))
     if not cleaned:
         return None
     if cleaned in TAG_KEYWORDS:
         return TAG_KEYWORDS[cleaned]
-    for key, slug in TAG_KEYWORDS.items():
-        if key in cleaned or cleaned in key:
+    # #bostonseafood / #italianfood → longest cuisine keyword embedded in the hashtag
+    for key, slug in sorted(TAG_KEYWORDS.items(), key=lambda item: len(item[0]), reverse=True):
+        if len(key) < 5:
+            continue  # skip short tokens like bar/pub that false-positive inside other words
+        if key in cleaned:
             return slug
     return None
+
+
+def _tags_in_text(text: str) -> set[str]:
+    found: set[str] = set()
+    lowered = text.lower()
+    for phrase, slug in TAG_PHRASES:
+        if phrase in lowered:
+            found.add(slug)
+    hashtags = re.findall(r"#([a-z0-9_]+)", lowered)
+    words = re.findall(r"[a-z][a-z0-9_]{2,}", lowered)
+    for token in hashtags + words:
+        slug = normalize_tag_token(token)
+        if slug:
+            found.add(slug)
+    # If a video already signals a cuisine, drop the generic restaurant chip for that clip.
+    if found & SPECIFIC_FOOD_TAGS:
+        found.discard("restaurant")
+    return found
 
 
 def extract_tags_from_videos(videos: list[dict[str, Any]], limit: int = 8) -> list[dict[str, str | int]]:
     counts: Counter[str] = Counter()
     for video in videos:
-        parts = [
-            str(video.get("title") or ""),
-            str(video.get("video_description") or ""),
-        ]
-        text = " ".join(parts).lower()
-        hashtags = re.findall(r"#([a-z0-9_]+)", text)
-        words = re.findall(r"[a-z][a-z0-9_]{2,}", text)
-        for token in hashtags + words:
-            slug = normalize_tag_token(token)
-            if slug:
-                counts[slug] += 1
+        text = " ".join([str(video.get("title") or ""), str(video.get("video_description") or "")])
+        for slug in _tags_in_text(text):
+            counts[slug] += 1
+    # Across the whole feed, hide bare restaurant when any cuisine tag made the cut.
+    if counts.keys() & SPECIFIC_FOOD_TAGS:
+        counts.pop("restaurant", None)
     return [{"tag": tag, "count": count} for tag, count in counts.most_common(limit)]
 
 
